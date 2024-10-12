@@ -2020,13 +2020,13 @@ pub const normal: []Round = &.{
 				.start = 0.00,
 				.end = 60.00,
 				.count = 40,
-				.goon_template = Template.special(.ceramic, .{}),
+				.goon_template = Template.special(.super_ceramic, .{}),
 			},
 			.{
 				.start = 0.10,
 				.end = 60.10,
 				.count = 40,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.regrow = true,
 				}),
 			},
@@ -2034,7 +2034,7 @@ pub const normal: []Round = &.{
 				.start = 0.20,
 				.end = 60.20,
 				.count = 40,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.fortified = true,
 				}),
 			},
@@ -2173,7 +2173,7 @@ pub const normal: []Round = &.{
 				.start = 0.00,
 				.end = 30.00,
 				.count = 100,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.fortified = true,
 				}),
 			},
@@ -2413,7 +2413,7 @@ pub const normal: []Round = &.{
 				.start = 7.00,
 				.end = 8.00,
 				.count = 50,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.fortified = true,
 				}),
 			},
@@ -2570,7 +2570,7 @@ pub const normal: []Round = &.{
 				.start = 5.00,
 				.end = 7.50,
 				.count = 100,
-				.goon_template = Template.special(.ceramic, .{}),
+				.goon_template = Template.special(.super_ceramic, .{}),
 			},
 			.{
 				.start = 5.00,
@@ -2612,7 +2612,7 @@ pub const normal: []Round = &.{
 				.start = 12.50,
 				.end = 15.00,
 				.count = 100,
-				.goon_template = Template.special(.ceramic, .{}),
+				.goon_template = Template.special(.super_ceramic, .{}),
 			},
 			.{
 				.start = 12.50,
@@ -2645,7 +2645,7 @@ pub const normal: []Round = &.{
 				.start = 0.00,
 				.end = 4.00,
 				.count = 100,
-				.goon_template = Template.special(.ceramic, .{}),
+				.goon_template = Template.special(.super_ceramic, .{}),
 			},
 			.{
 				.start = 4.00,
@@ -2657,7 +2657,7 @@ pub const normal: []Round = &.{
 				.start = 7.00,
 				.end = 9.00,
 				.count = 300,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.fortified = true,
 				}),
 			},
@@ -2738,7 +2738,7 @@ pub const normal: []Round = &.{
 				.start = 0.00,
 				.end = 9.00,
 				.count = 100,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.fortified = true,
 				}),
 			},
@@ -2943,7 +2943,7 @@ pub const normal: []Round = &.{
 				.start = 14.00,
 				.end = 15.50,
 				.count = 42,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.camo = true,
 				}),
 			},
@@ -2951,7 +2951,7 @@ pub const normal: []Round = &.{
 				.start = 20.00,
 				.end = 21.50,
 				.count = 42,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.fortified = true,
 				}),
 			},
@@ -3491,7 +3491,7 @@ pub const normal: []Round = &.{
 				.start = 9.00,
 				.end = 13.50,
 				.count = 200,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.camo = true,
 					.fortified = true,
 				}),
@@ -3536,7 +3536,7 @@ pub const normal: []Round = &.{
 				.start = 8.00,
 				.end = 9.00,
 				.count = 77,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.camo = true,
 				}),
 			},
@@ -6285,7 +6285,7 @@ pub const alternate: []Round = &.{
 				.start = 0.00,
 				.end = 60.00,
 				.count = 40,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.camo = true,
 				}),
 			},
@@ -6293,7 +6293,7 @@ pub const alternate: []Round = &.{
 				.start = 0.10,
 				.end = 60.10,
 				.count = 40,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.regrow = true,
 				}),
 			},
@@ -6301,7 +6301,7 @@ pub const alternate: []Round = &.{
 				.start = 0.20,
 				.end = 60.20,
 				.count = 40,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.camo = true,
 					.regrow = true,
 					.fortified = true,
@@ -6427,7 +6427,7 @@ pub const alternate: []Round = &.{
 				.start = 0.00,
 				.end = 10.00,
 				.count = 50,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.regrow = true,
 					.fortified = true,
 				}),
@@ -6450,7 +6450,7 @@ pub const alternate: []Round = &.{
 				.start = 0.00,
 				.end = 30.00,
 				.count = 100,
-				.goon_template = Template.special(.ceramic, .{
+				.goon_template = Template.special(.super_ceramic, .{
 					.fortified = true,
 				}),
 			},

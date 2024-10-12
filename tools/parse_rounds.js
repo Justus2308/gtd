@@ -6,7 +6,7 @@ var rounds = document.getElementsByClassName('round');
 Array.from(rounds).map(function(round, n) {
 	out += `\t.{\n\t\t.id = ${n+1},\n\t\t.waves = &.{\n`;
 
-	var imgs = round.getElementsByClassName('goon');
+	var imgs = round.getElementsByClassName('bloon');
 	var waves = Array.from(imgs).map(img => img.parentElement);
 	var names = waves.map(wave => wave.className);
 	var counts = waves.map(wave => wave.getElementsByClassName('count').item(0).textContent);
@@ -37,7 +37,7 @@ Array.from(rounds).map(function(round, n) {
 			template_fn = 'normal';
 		} else {
 			template_fn = 'special';
-			if ((i >= 80) && (goon.localeCompare('ceramic') === 0)) {
+			if ((n >= 80) && (goon.localeCompare('ceramic') === 0)) {
 				goon = 'super_ceramic';
 			}
 		}
