@@ -92,7 +92,9 @@ pub const Attack = union {
 
 
         pub const Block = struct {
-
+            pub const List = struct {
+                
+            };
         };
     };
 

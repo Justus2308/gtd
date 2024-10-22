@@ -117,4 +117,6 @@ pub const Mutable = extern struct {
     };
 
     pub const List = std.MultiArrayList(Mutable);
+
+    pub const max_per_page = mem.page_size / @sizeOf(Mutable);
 };
