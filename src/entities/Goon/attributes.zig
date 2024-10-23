@@ -21,13 +21,9 @@ pub const Immutable = extern struct {
     base_speed: f16,
 
     child_count: u16,
-    child_count_lategame: u16,
-
     children: Children,
-    children_lategame: Children,
 
     rbe: u16,
-    rbe_lategame: u16,
 
     extra: Extra,
 
@@ -61,62 +57,112 @@ pub const Immutable = extern struct {
         large,
     };
 
-    pub const Config = struct {
+    pub const List = [enums.directEnumArrayLen(Kind, 0)]Immutable;
+
+    pub const Template = struct {
         base_hp: f16,
         base_speed: f16,
-        children: Immutable.Children,
-        children_lategame: Immutable.Children,
-        size: Immutable.Size,
 
-        immunity: Damage = .{},
-        fortified_factor: u8 = 2,
-        inherits_fortified: bool = false,
+        child_count: u16,
+        child_count_lategame: u16,
+
+        children: Children,
+        children_lategame: Children,
+
+        rbe: u16,
+        rbe_lategame: u16,
+
+        extra: Extra,
+
+        pub const Config = struct {
+            base_hp: f16,
+            base_speed: f16,
+            children: Immutable.Children,
+            children_lategame: Immutable.Children,
+            size: Immutable.Size,
+
+            immunity: Damage = .{},
+            fortified_factor: u8 = 2,
+            inherits_fortified: bool = false,
+        };
+
+        pub fn countChildren(immutable: *Immutable, comptime lategame: bool) u16 {
+            var count: u16 = 0;
+            const children = if (lategame) immutable.children_lategame else immutable.children;
+            for (meta.fields(Immutable.Children)) |field| {
+                const n = @field(children, field.name);
+                if (n > 0) {
+                    const child_kind = meta.stringToEnum(Kind, field.name).?;
+                    const child = Goon.getImmutable(child_kind);
+                    count += n * (1 + (if (lategame) child.child_count_lategame else child.child_count));
+                }
+            }
+            return count;
+        }
+        pub fn countRbe(immutable: *Immutable, comptime lategame: bool) u32 {
+            var rbe: u32 = immutable.base_hp;
+            const children = if (lategame) immutable.children_lategame else immutable.children;
+            for (meta.fields(Immutable.Children)) |field| {
+                const n = @field(children, field.name);
+                if (n > 0) {
+                    const child_kind = meta.stringToEnum(Kind, field.name).?;
+                    const child = Goon.getImmutable(child_kind);
+                    rbe += n * (if (lategame) child.rbe_lategame else child.rbe);
+                }
+            }
+            return rbe;
+        }
+
+        pub fn resolve(
+            comptime templates: *const [enums.directEnumArrayLen(Kind, 0)]Immutable.Template,
+            comptime lategame: bool,
+        ) *const Immutable.List {
+            var resolved: Immutable.List = undefined;
+            for (0..templates.len) |i| {
+                const t = templates[i];
+                resolved[i] = if (lategame) .{
+                    .base_hp = t.base_hp,
+                    .base_speed = t.base_speed,
+
+                    .child_count = t.child_count_lategame,
+                    .children = t.children_lategame,
+                    .rbe = t.rbe_lategame,
+
+                    .extra = t.extra,
+                } else .{
+                    .base_hp = t.base_hp,
+                    .base_speed = t.base_speed,
+
+                    .child_count = t.child_count,
+                    .children = t.children,
+                    .rbe = t.rbe,
+
+                    .extra = t.extra,
+                };
+            }
+            return &resolved;
+        }
     };
-    pub fn configure(comptime config: Config) Immutable {
-        var immutable: Immutable = undefined;
-        immutable.base_hp = config.base_hp;
-        immutable.base_speed = config.base_speed;
-        immutable.children = config.children;
-        immutable.children_lategame = config.children_lategame;
-        immutable.extra.size = config.size;
 
-        immutable.extra.immunity = config.immunity;
-        immutable.extra.fortified_factor = config.fortified_factor;
-        immutable.extra.inherits_fortified = config.inherits_fortified;
+    pub fn makeTemplate(comptime config: Immutable.Template.Config) Immutable.Template {
+        var template: Immutable.Template = undefined;
+        template.base_hp = config.base_hp;
+        template.base_speed = config.base_speed;
+        template.children = config.children;
+        template.children_lategame = config.children_lategame;
+        template.extra.size = config.size;
 
-        immutable.child_count = comptime immutable.countChildren(false);
-        immutable.child_count_lategame = comptime immutable.countChildren(true);
+        template.extra.immunity = config.immunity;
+        template.extra.fortified_factor = config.fortified_factor;
+        template.extra.inherits_fortified = config.inherits_fortified;
 
-        immutable.rbe = comptime immutable.countRbe(false);
-        immutable.rbe_lategame = comptime immutable.countRbe(true);
+        template.child_count = comptime template.countChildren(false);
+        template.child_count_lategame = comptime template.countChildren(true);
 
-        return immutable;
-    }
-    fn countChildren(immutable: *Immutable, comptime lategame: bool) u16 {
-        var count: u16 = 0;
-        const children = if (lategame) immutable.children_lategame else immutable.children;
-        for (meta.fields(Immutable.Children)) |field| {
-            const n = @field(children, field.name);
-            if (n > 0) {
-                const child_kind = meta.stringToEnum(Kind, field.name).?;
-                const child = Goon.getImmutable(child_kind);
-                count += n * (1 + (if (lategame) child.child_count_lategame else child.child_count));
-            }
-        }
-        return count;
-    }
-    fn countRbe(immutable: *Immutable, comptime lategame: bool) u32 {
-        var rbe: u32 = immutable.base_hp;
-        const children = if (lategame) immutable.children_lategame else immutable.children;
-        for (meta.fields(Immutable.Children)) |field| {
-            const n = @field(children, field.name);
-            if (n > 0) {
-                const child_kind = meta.stringToEnum(Kind, field.name).?;
-                const child = Goon.getImmutable(child_kind);
-                rbe += n * (if (lategame) child.rbe_lategame else child.rbe);
-            }
-        }
-        return rbe;
+        template.rbe = comptime template.countRbe(false);
+        template.rbe_lategame = comptime template.countRbe(true);
+
+        return template;
     }
 };
 

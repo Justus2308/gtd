@@ -39,6 +39,8 @@ scaling: Scaling,
 rounds: []Round,
 winning_round: u64,
 
+goon_immutable_ptr: *const Goon.Immutable.List,
+
 // persistent data
 apes: Ape.Mutable.List,
 effects: Effect.List,
@@ -115,6 +117,8 @@ pub fn init(
             .impoppable => 100,
         },
 
+        .goon_immutable_ptr = &Goon.immutable_earlygame,
+
         .apes = Ape.Mutable.List.empty,
         .goon_blocks = Goon.Block.List.init(arena.allocator(), ),
     };
@@ -135,7 +139,8 @@ pub fn initRound(state: *State, round_id: u64) Allocator.Error!void {
     const effect_count = state.effects.items.len;
     const effect_mem_needed = mem.alignForward(usize, (@sizeOf(Effect) * effect_count) + mem.page_size/4, mem.page_size);
 
-    const estimate = goon_mem_needed + ape_mem_needed + effect_mem_needed;
+    const persistent_estimate = ape_mem_needed + effect_mem_needed;
+    const per_round_estimate = goon_mem_needed;
 
     state.goon_blocks.reset(.{ .free_all = {} });
     state.arena;
@@ -146,6 +151,10 @@ pub fn initRound(state: *State, round_id: u64) Allocator.Error!void {
     state.scaleSpeed();
     state.scaleStatus();
     state.scaleCash();
+
+    if (round >= Round.lategame_start) {
+        state.goon_immutable_ptr = &Goon.immutable_lategame;
+    }
 }
 
 
@@ -578,3 +587,24 @@ pub fn updateGoonBlock(task: *Task) void {
 //     "slow path" für per-round data
 //     Alles, was über geschätzte Größe v. prd hinausgeht -> arena muss backing allocator benutzen.
 //     -> möglichst vermeiden durch gute Abschätzungen und prd garbage collection
+
+// POP QUIZ: dürfen diese pointer während einer runde invalidated werden (durch realloc o.ä.)?
+// Goons?       -> Positionen werden als target für seeking projectiles benutzt, also: NEIN!
+// Apes?        -> Alles was von apes gespawned wird hat keine back references, goons sind apes sowieso egal,
+//                 also: JA!
+// Projectiles? -> kommt drauf an, wenn pointer nicht invalidated werden dann concurrency vllt besser
+//                 da: projectiles können gleichzeitig gespawned und geupdated werden, also: NEIN!
+// Effects?     -> ka
+
+// ALSO:
+
+// Goons:
+// werden blockweise allocated, blocks haben fixe größe und werden wenn dann komplett gefreed
+// das einzige was hier hin und wieder reallocated wird ist die ref_list auf die blocks das ist aber
+// egal weil die nur für lookups von goon ids benutzt wird. Die goon mutable data selber ist stabil.
+
+// Apes:
+// werden in arraylist geallocated, passt schon weil is ja egal
+
+// Projectiles:
+// Eigentlich genau so wie bei goons

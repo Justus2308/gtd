@@ -25,10 +25,11 @@ const Goon = @This();
 pub const Mutable = attributes.Mutable;
 pub const Immutable = attributes.Immutable;
 
-pub const immutable_attribute_table = data.immutable_attribute_table;
+pub const immutable_earlygame = data.immutable_earlygame;
+pub const immutable_lategame = data.immutable_lategame;
 
-pub inline fn getImmutable(kind: Kind) *const attributes.Immutable {
-    return &Goon.immutable_attribute_table[@intFromEnum(kind)];
+pub inline fn getImmutable(immutable_data_ptr: *const Immutable.List, kind: Kind) *const Immutable {
+    return &immutable_data_ptr[@intFromEnum(kind)];
 }
 
 pub const base_speed_offset_table = data.base_speed_offset_table;
@@ -54,23 +55,28 @@ pub const Kind = enum(u8) {
 
 pub const Block align(mem.page_size) = struct {
     memory: [Block.size]u8 align(alignment) = undefined,
-    mutable_attr_table: Goon.Mutable.Table,
+    mutable_list: Goon.Mutable.List,
     id_offset: u32,
-    alive_map: AliveMap,
+    is_free: BoolVec,
+
+    due_damage: F64Vec,
+    due_pierce: U32Vec,
 
     depends_on: DependencyMap,
     provides: DependencyMap,
 
     pub const capacity = 512;
-    const size = Goon.MutableAttributeTable.capacityInBytes(Block.capacity);
-    const alignment = @alignOf(Goon.MutableAttributeTable);
+    const size = Goon.Mutable.List.capacityInBytes(Block.capacity);
+    const alignment = @alignOf(Goon.Mutable);
 
-    pub const Attribute = Mutable.Table.Field;
+    const F64Vec = @Vector(Block.capacity, f64);
+    const U32Vec = @Vector(Block.capacity, u32);
+    const BoolVec = @Vector(Block.capacity, bool);
+
+    pub const Attribute = Mutable.List.Field;
     fn AttributeType(comptime attribute: Attribute) type {
         return std.meta.fieldInfo(Goon.Mutable.Table, attribute).type;
     }
-
-    pub const AliveMap = std.bit_set.StaticBitSet(Block.capacity);
 
     pub const Dependency = enum(u32) {
 
@@ -84,13 +90,14 @@ pub const Block align(mem.page_size) = struct {
         defer pool.destroy(block);
 
         block.* = .{
-            .mutable_attr_table = .{
+            .mutable_list = .{
                 .bytes = block.memory,
                 .len = 0,
                 .capacity = Block.capacity,
             },
             .id_offset = id_offset,
             .alive_map = Block.AliveMap.initEmpty(),
+            .due_damage = @splat(0.0),
         };
     }
     pub fn destroy(block: *Block, pool: *Block.Pool) void {
@@ -106,7 +113,7 @@ pub const Block align(mem.page_size) = struct {
     }
 
     pub inline fn used(block: *Block) u32 {
-        return @intCast(block.mutable_attr_table.len);
+        return @intCast(block.mutable_list.len);
     }
 
     pub inline fn getAttr(
@@ -114,7 +121,7 @@ pub const Block align(mem.page_size) = struct {
         goon: Goon,
         comptime attribute: Attribute,
     ) Block.AttributeType(attribute) {
-        return block.mutable_attr_table.items(attribute)[goon.id - block.id_offset];
+        return block.mutable_list.items(attribute)[goon.id - block.id_offset];
     }
     pub inline fn setAttr(
         block: *Block,
@@ -122,56 +129,104 @@ pub const Block align(mem.page_size) = struct {
         comptime attribute: Attribute,
         value: Block.AttributeType(attribute),
     ) void {
-        block.mutable_attr_table.items(attribute)[goon.id - block.id_offset] = value;
+        block.mutable_list.items(attribute)[goon.id - block.id_offset] = value;
     }
 
     pub inline fn get(block: *Block, goon: Goon) Goon.Mutable {
-        return block.mutable_attr_table.get(goon.id - block.id_offset);
+        return block.mutable_list.get(goon.id - block.id_offset);
     }
     pub inline fn set(block: *Block, goon: Goon, mutable: Goon.Mutable) void {
-        block.mutable_attr_table.set(goon.id - block.id_offset, mutable);
+        block.mutable_list.set(goon.id - block.id_offset, mutable);
     }
 
     pub fn spawn(block: *Block, mutable: Goon.Mutable) Goon {
-        const local_id = block.mutable_attr_table.addOneAssumeCapacity();
-        block.mutable_attr_table.set(local_id, mutable);
+        const local_id = block.mutable_list.addOneAssumeCapacity();
+        block.mutable_list.set(local_id, mutable);
         block.alive_map.set(local_id);
         return Goon{ .id = (local_id + block.id_offset) };
     }
-    pub fn kill(block: *Block, goon: Goon) void {
+    pub fn damage(block: *Block, goon: Goon, dmg: f64) void {
+        const hp = block.getAttr(goon, .hp);
+
+        const kind = block.getAttr(goon, .kind);
+        const immutable = Goon.getImmutable(kind);
+
         block.alive_map.unset(goon.id - block.id_offset);
     }
+    pub fn applyDueDamage(block: *Block, immutable_data_ptr: *const Goon.Immutable.List) void {
+        // 1. max(hp - dmg, 0) = hp remaining
+        // 2. max(dmg - hp, 0) = dmg remaining
+        // 3. check for dead goons, spawn children
+        // 4. reduce(add, dmg remaining) > 0 ? go again
+        // WICHTIG JEDES PROJECTILE DARF NUR MIT EINEM GOON PRO FRAME COLLIDEN
+        // -> wie aoe handlen? projektile mit unendlich pierce generieren?
+
+        // in jedem block muss immer genug platz für alle children sein
+        // sonst lässt sich hier nix parallelisieren alda
+
+        var hp_vec: F64Vec = undefined;
+        @memcpy(&hp_vec, block.mutable_list.items(.hp));
+
+        while (@reduce(.Add, block.due_damage) > 0.0) {
+            const all_zeroes: F64Vec = @splat(0.0);
+
+            const hp_remaining = (hp_vec - block.due_damage);
+            const goon_is_dead = (hp_remaining > 0);
+            hp_vec = @select(f64, goon_is_dead, hp_remaining, all_zeroes);
+
+            const dmg_remaining = (block.due_damage - hp_vec);
+            const dmg_source_is_done = (dmg_remaining > 0);
+            block.due_damage = @select(f64, dmg_source_is_done, dmg_remaining, all_zeroes);
+
+            if (!@reduce(.Or, (goon_is_dead or dmg_source_is_done))) {
+                // There are no more known collisions to left, we check
+                // for collisions with freshly spawned goons next frame.
+                break;
+            }
+
+            for (0..Block.capacity) |i| {
+                const kinds = block.mutable_list.items(.kind);
+                if (goon_is_dead[i]) {
+                    // TODO:
+                    // 1. count direct children
+                    // 2. if only 1: replace dead goon with child
+                    // 3. if >1: replace dead goon with first child and shift position,
+                    //    spawn the rest in free slots
+                    // 4. apply remaining damage to children
+                    // 5. if they die, repeat process for them
+                    const immutable = Goon.getImmutable(immutable_data_ptr, kinds[i]);
+                    inline for (meta.fields(Goon.Immutable.Children), 0..) |field, i| {
+                        const child_count = @field(immutable.children, field.name);
+                        for (0..child_count) |_| {
+                            block.spawn(.{
+                                .color = if (i == 0) .pink else .none,
+                                .
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        @memcpy(block.mutable_list.items(.hp), &hp_vec);
+    }
+
+    pub fn kill(block: *Block, goon: Goon) void {
+        block.is_free[goon.id - block.id_offset] = true;
+    }
+    fn findNextFreeIdx(block: *const Block) ?u32 {
+        return simd.firstTrue(block);
+    }
+
     pub inline fn isAlive(block: *Block, goon: Goon) bool {
-        return block.alive_map.isSet(goon.id - block.id_offset);
+        return !block.is_free[goon.id - block.id_offset];
     }
     pub fn hasAlive(block: *Block) bool {
-        return (block.alive_map.findFirstSet() != null);
+        return @reduce(.And, block.is_free);
     }
 
     pub fn isFull(block: *Block) bool {
-        return (block.mutable_attr_table.len == block.mutable_attr_table.cap);
-    }
-
-    pub fn apply(block: *Block, comptime attribute: Attribute, op: std.builtin.AtomicRmwOp, operand: AttributeType(attribute)) void {
-        const T = AttributeType(attribute);
-        const batch_size = simd.suggestVectorLength(T) orelse 1;
-        const Vec = @Vector(batch_size, T);
-
-        const used_ = block.used();
-        const items = block.mutable_attr_table.items(attribute);
-
-        var i: u32 = 0;
-        while (i < used_) : (i += batch_size) {
-            if (batch_size > 1) {
-                const vec: Vec = items[i..][0..batch_size];
-                
-            } else {
-                
-            }
-        }
-        for ((i-batch_size)..used) |r| {
-
-        }
+        return !@reduce(.Or, block.is_free);
     }
 
 
