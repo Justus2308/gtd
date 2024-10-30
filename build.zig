@@ -25,6 +25,9 @@ pub fn build(b: *std.Build) void {
     const game_mod = b.createModule(.{
         .root_source_file = b.path("src/game.zig"),
     });
+    const stdx_mod = b.createModule(.{
+        .root_source_file = b.path("src/stdx.zig"),
+    });
 
     const exe = b.addExecutable(.{
         .name = "gtd",
@@ -42,6 +45,7 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addImport("entities", entities_mod);
     exe.root_module.addImport("game", game_mod);
+    exe.root_module.addImport("stdx", stdx_mod);
 
     b.installArtifact(exe);
 
@@ -65,4 +69,20 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
+
+    const memory_pool_benchmark = b.addExecutable(.{
+        .name = "memory_pool_benchmark",
+        .root_source_file = b.path("tools/memory_pool_benchmark.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    memory_pool_benchmark.root_module.addImport("stdx", stdx_mod);
+
+    const memory_pool_benchmark_install = b.addInstallArtifact(memory_pool_benchmark, .{});
+
+    const memory_pool_benchmark_cmd = b.addRunArtifact(memory_pool_benchmark);
+    memory_pool_benchmark_cmd.step.dependOn(&memory_pool_benchmark_install.step);
+
+    const memory_pool_benchmark_step = b.step("benchmark-mem-pool", "Run memory pool benchmark");
+    memory_pool_benchmark_step.dependOn(&memory_pool_benchmark_cmd.step);
 }

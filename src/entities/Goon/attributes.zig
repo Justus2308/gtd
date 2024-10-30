@@ -176,9 +176,9 @@ pub const Mutable = struct {
 
 
     pub const List = std.MultiArrayList(Mutable);
+    
 
-
-    pub const Color = enum(u4) {
+    pub const Color = enum(u8) {
         none = 0,
         red,
         blue,

@@ -1,6 +1,7 @@
 const std = @import("std");
 const raylib = @import("raylib");
 const game = @import("game");
+const stdx = @import("stdx");
 
 const attributes = @import("Goon/attributes.zig");
 const data = @import("Goon/data.zig");
@@ -12,6 +13,7 @@ const meta = std.meta;
 const simd = std.simd;
 
 const Allocator = mem.Allocator;
+const Vector = stdx.Vector;
 
 const assert = std.debug.assert;
 
@@ -69,8 +71,8 @@ pub const Block align(mem.page_size) = struct {
     const size = Goon.Mutable.List.capacityInBytes(Block.capacity);
     const alignment = @alignOf(Goon.Mutable);
 
-    const F64Vec = @Vector(Block.capacity, f64);
-    const U32Vec = @Vector(Block.capacity, u32);
+    const F64Vec = Vector(Block.capacity, f64);
+    const U32Vec = Vector(Block.capacity, u32);
     const BoolVec = @Vector(Block.capacity, bool);
 
     pub const Attribute = Mutable.List.Field;
@@ -164,6 +166,9 @@ pub const Block align(mem.page_size) = struct {
         // in jedem block muss immer genug platz für alle children sein
         // sonst lässt sich hier nix parallelisieren alda
 
+        // TODO diagramm davon anfertigen simd is verwirrend alda
+        // TODO ist hier alles nur mit simd möglich? -> als shader implementieren?
+
         var hp_vec: F64Vec = undefined;
         @memcpy(&hp_vec, block.mutable_list.items(.hp));
 
@@ -184,8 +189,41 @@ pub const Block align(mem.page_size) = struct {
                 break;
             }
 
+            const KindVec = Vector(Block.capacity, Kind);
+            const kinds = KindVec.fromSlice(block.mutable_list.items(.kind));
+            // @memcpy(&kinds, @as(*const KindVec, @ptrCast(block.mutable_list.items(.kind))));
+
+            const ColorVec = Vector(Block.capacity, Mutable.Color);
+            // decrement colors of normal goons
+            const normal_only_pred = (kinds == KindVec.splat(.normal));
+            const normal_only_decr = @select(
+                ColorVec.VectorElem,
+                normal_only_pred,
+                ColorVec.splat(@enumFromInt(1)),
+                ColorVec.splat(@enumFromInt(0)),
+            );
+            const dmg_decr = @select(
+                F64Vec.VectorElem,
+                normal_only_pred,
+                F64Vec.splat(1.0),
+                F64Vec.splat(0.0),
+            );
+
+            // TODO implement .penetrates_large (Penetrates Blimp)
+            const colors_updated = ColorVec.fromSlice(block.mutable_list.items(.color));
+            while (@reduce(.Max, dmg_remaining) >= 1.0) {
+                colors_updated.* -= @select(
+                    ColorVec.VectorElem,
+                    (dmg_remaining >= 1.0),
+                    normal_only_decr,
+                    ColorVec.splat(@enumFromInt(0)),
+                );
+                dmg_remaining -= dmg_decr;
+            }
+
+
+
             for (0..Block.capacity) |i| {
-                const kinds = block.mutable_list.items(.kind);
                 if (goon_is_dead[i]) {
                     // TODO:
                     // 1. count direct children
@@ -194,21 +232,52 @@ pub const Block align(mem.page_size) = struct {
                     //    spawn the rest in free slots
                     // 4. apply remaining damage to children
                     // 5. if they die, repeat process for them
+
+                    // downgrade normal goons:
+                    // 1. select normals from kinds
+                    // 2. decrement colors
+                    // 3. select zeroes (== .none) => kill them
                     const immutable = Goon.getImmutable(immutable_data_ptr, kinds[i]);
                     inline for (meta.fields(Goon.Immutable.Children), 0..) |field, i| {
                         const child_count = @field(immutable.children, field.name);
                         for (0..child_count) |_| {
                             block.spawn(.{
                                 .color = if (i == 0) .pink else .none,
-                                .
                             });
                         }
                     }
                 }
             }
+
+
+            const Hp = @FieldType(Mutable, "hp");
+            comptime assert(@sizeOf(Hp) >= @sizeOf(Kind));
+            const hp_batch_info = Block.batchCount(Hp);
+            const kind_batch_info = Block.batchCount(Kind);
+            const hp_batches_per_kind_batch = hp_batch_info.full_batch_count / kind_batch_info.full_batch_count;
+
+            const KindVec2 = Vector(kind_batch_info.batch_size, Kind);
+            const kinds_slice = block.mutable_list.items(.kind);
+
+            const HpVec = Vector(hp_batch_info.batch_size, Hp);
+            const hp_slice = block.mutable_list.items(.hp);
+
+            for (0..kind_batch_info.full_batch_count) |batch_idx| {
+                const kinds_idx = kind_batch_info.batch_size * batch_idx;
+                const kinds2 = KindVec2.fromSlice(kinds_slice[kinds_idx..][0..kind_batch_info.batch_size]);
+
+                for (0..hp_batches_per_kind_batch) |hp_batch_idx| {
+                    const hp_idx = hp_batch_info.batch_size * ((batch_idx * hp_batches_per_kind_batch) + hp_batch_idx);
+                    const hp2 = HpVec.fromSlice(hp_slice[hp_idx..][0..hp_batch_info.batch_size]);
+                }
+            }
         }
 
         @memcpy(block.mutable_list.items(.hp), &hp_vec);
+
+        const simd_reg_size_in_bytes = simd.suggestVectorLength(u8) orelse 16;
+        const batch_size_in_bytes = 8 * 8 * simd_reg_size_in_bytes;
+        const batch_count = @divExact(Block.capacity, batch_size_in_bytes);
     }
 
     pub fn kill(block: *Block, goon: Goon) void {
@@ -227,6 +296,30 @@ pub const Block align(mem.page_size) = struct {
 
     pub fn isFull(block: *Block) bool {
         return !@reduce(.Or, block.is_free);
+    }
+
+
+    const simd_operations_per_batch = 8;
+
+    /// We split required SIMD operations into batches depending on
+    /// the target SIMD register size to prevent zig from transforming
+    /// our oversized vectors into hundreds of register-sized vectors.
+    /// Every batch will perform `simd_operations_per_batch` consecutive
+    /// SIMD operations.
+    fn batchInfo(comptime T: type) struct {
+        batch_size: comptime_int,
+        full_batch_count: comptime_int,
+        remaining_batch_size: comptime_int,
+    } {
+        const batch_size = simd_operations_per_batch * (simd.suggestVectorLength(T) orelse 1);
+        if (!math.isPowerOfTwo(batch_size)) {
+            @compileError("TODO: support non-power-of-two SIMD vector sizes");
+        }
+        return .{
+            .batch_size = batch_size,
+            .full_batches = @divFloor(Block.capacity, batch_size),
+            .remaining_batch_size = @rem(Block.capacity, batch_size),
+        };
     }
 
 
