@@ -1,3 +1,5 @@
+//! DEPRECATED
+
 const std = @import("std");
 const meta = std.meta;
 

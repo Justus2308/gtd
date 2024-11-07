@@ -346,7 +346,7 @@ pub const Block align(mem.page_size) = struct {
             try list.ref_list.ensureTotalCapacityPrecise(block_count);
             for (0..block_count) |i| {
                 const block = try list.pool.create();
-                list.ref_list.insertAssumeCapacity(i, block);
+                list.ref_list.items[i] = block;
             }
         }
         pub fn deinit(list: *Block.List) void {

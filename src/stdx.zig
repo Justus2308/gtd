@@ -104,3 +104,15 @@ pub fn calculateSimdBatches(comptime Element: type, comptime element_count: usiz
 pub fn todo(comptime msg: []const u8) noreturn {
     @compileError("TODO: " ++ msg);
 }
+
+pub fn CacheLinePadded(comptime T: type) type {
+    const padding_size = cache_line - (@sizeOf(T) % cache_line);
+    return extern struct {
+        data: T align(cache_line),
+        _padding: [padding_size]u8 = undefined,
+
+        pub fn init(data: T) @This() {
+            return .{ .data = data };
+        }
+    };
+}

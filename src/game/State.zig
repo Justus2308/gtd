@@ -1,6 +1,7 @@
 const std = @import("std");
 const raylib = @import("raylib");
 const entities = @import("entities");
+const stdx = @import("stdx");
 
 const math = std.math;
 const mem = std.mem;
@@ -14,6 +15,7 @@ const assert = std.debug.assert;
 const Ape = entities.Ape;
 const Goon = entities.Goon;
 const Effect = entities.Effect;
+const CollisionMap = entities.CollisionMap;
 const Map = @import("Map.zig");
 const Round = @import("Round.zig");
 
@@ -21,6 +23,10 @@ const Round = @import("Round.zig");
 // game state
 allocator: Allocator,
 arena: ArenaAllocator,
+
+/// Everything is drawn to this first before
+/// this is finally drawn to the screen.
+draw_target: raylib.RenderTexture2D,
 
 map: *Map,
 background: raylib.Texture2D,
@@ -40,6 +46,10 @@ rounds: []Round,
 winning_round: u64,
 
 goon_immutable_ptr: *const Goon.Immutable.List,
+
+// TODO: give this its own cache line to minimize false
+// sharing while merging with task-local collision maps?
+collision_map: stdx.CacheLinePadded(CollisionMap),
 
 // persistent data
 apes: Ape.Mutable.List,
@@ -223,112 +233,6 @@ fn consumeExtraAllocations(state: *State) Allocator.Error!void {
             .effect => {
                 const full: *extra_allocation.Type(.effect) = @fieldParentPtr("node", node);
                 try state.effects.append(state.allocator, full.data);
-            }
-        }
-    }
-    // we don't need to do anything else since all the memory we just 
-    // traversed is inside our arena which we will reset soon.
-}
-
-
-/// !!! DEPRECATED !!!
-/// Basically a makeshift VLA with a couple of fixed sizes.
-/// I am absolutely positive that this is best practice,
-/// you should definitely copy this for your own project!
-pub const extra_allocation2 = struct {
-    pub const Type = enum(usize) {
-        /// For internal use.
-        dummy,
-
-        // per-round
-        goon_block,
-        projectile_block,
-        aoe,
-
-        // persistent
-        ape,
-        effect,
-    };
-    pub fn CreateType(comptime data_type: extra_allocation2.Type) type {
-        return extern struct {
-            type: extra_allocation.Type = data_type,
-            next: ?*anyopaque = null,
-            data: Data,
-
-            pub const Data = DataType(data_type);
-        };
-    }
-    fn DataType(comptime data_type: extra_allocation2.Type) type {
-        return switch (data_type) {
-            .dummy => void,
-
-            .goon_block => *Goon.Block,
-            .projectile_block => *Ape.Attack.Projectile.Block,
-            .aoe => Ape.Attack.AoE,
-
-            .ape => Ape.Mutable,
-            .effect => Effect,
-        };
-    }
-
-    pub fn create(
-        allocator: Allocator,
-        comptime data_type: extra_allocation2.Type,
-        data: DataType(data_type),
-    ) Allocator.Error!*anyopaque {
-        const T = CreateType(data_type);
-        const ptr = try allocator.create(T);
-        ptr.data = data;
-        return ptr;
-    }
-
-    // We can do this because the field order is fixed (`extern`).
-    pub inline fn getNext(node: *anyopaque) ?*anyopaque {
-        const not_a_dummy: *extra_allocation2.CreateType(.dummy) = @ptrCast(@alignCast(node));
-        assert(not_a_dummy.type != .dummy);
-        return not_a_dummy.next;
-    }
-    pub inline fn setNext(node: *anyopaque, next: ?*anyopaque) void {
-        const not_a_dummy: *extra_allocation2.CreateType(.dummy) = @ptrCast(@alignCast(node));
-        assert(not_a_dummy.type != .dummy);
-        not_a_dummy.next = next;
-    }
-
-    pub fn insert(head: *?*anyopaque, node: *anyopaque) void {
-        if (head.*) |h| {
-            var current = h;
-            while (extra_allocation2.getNext(current)) |next| : (current = next) {}
-            extra_allocation2.setNext(current, node);
-        } else {
-            head.* = node;
-        }
-    }
-};
-
-/// !!! DEPRECATED !!!
-/// This will free all extra allocations.
-/// Their data will either be discarded or moved to the appropriate place.
-/// This operation may result in an expansion of the persistent data segment.
-fn consumeExtraAllocations2(state: *State) Allocator.Error!void {
-    var current = state.extra_allocs;
-    while (current) |curr| : (current = extra_allocation2.getNext(curr)) {
-        const not_a_dummy: *extra_allocation2.CreateType(.dummy) = @ptrCast(@alignCast(curr));
-        switch (not_a_dummy.type) {
-            .dummy => unreachable,
-
-            .goon_block,
-            .projectile_block,
-            .aoe,
-            => {}, // per-round data, will be discarded by arena reset
-
-            // We need to commit some C-style crimes...
-            .ape => {
-                const ape_ptr: *Ape = @ptrCast(@alignCast(&not_a_dummy.data));
-                state.apes.append(state.allocator, ape_ptr.*);
-            },
-            .effect => {
-                const effect_ptr: *Effect = @ptrCast(@alignCast(&not_a_dummy.data));
-                state.effects.append(state.allocator, effect_ptr.*);
             }
         }
     }
@@ -527,6 +431,10 @@ pub fn updateGoonBlock(task: *Task) void {
     const ctx: *TaskCtx = @fieldParentPtr("task", task);
 }
 
+pub fn updateScreenDims(state: *State, screen_width: u32, screen_height: u32) void {
+
+}
+
 
 
 // REIHENFOLGE
@@ -608,3 +516,12 @@ pub fn updateGoonBlock(task: *Task) void {
 
 // Projectiles:
 // Eigentlich genau so wie bei goons
+
+// WAS PASSIERT WENN WINDOW GERESCALED WIRD
+// - szene muss auch gerescaled werden (draw_target)
+// - wenn alles davon abhängt und user einfach eine auflösung für das draw_target
+//   auswählen kann damit er selber schuld ist wenns gescaled kacke aussieht wars das harhar
+// - dann muss eig nur alles mal geupdated werden wenn user die auflösung ändert das is dann
+//   halt teuer aber ist ok weil das ist dann ja sowieso in einem menü
+// - irgendwo muss ein zentraler scaling faktor bereitgestellt werden den dann alle benutzen/
+//   zu sich rüberkopieren können

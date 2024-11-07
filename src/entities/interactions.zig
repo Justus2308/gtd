@@ -2,6 +2,9 @@ const std = @import("std");
 const entities = @import("entities");
 const Goon = entities.Goon;
 
+const collisions = @import("interactions/collisions.zig");
+pub const CollisionMap = collisions.CollisionMap;
+
 pub const Damage = packed struct(u4) {
 	black: bool = false,
 	white: bool = false,
