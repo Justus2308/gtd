@@ -13,11 +13,11 @@ pub fn build(b: *std.Build) void {
     const raygui_mod = raylib_dep.module("raygui"); // raygui module
     const raylib_artifact = raylib_dep.artifact("raylib"); // raylib C library
 
-    // const sdl_dep = b.dependency("sdl-zig", .{
-    //     .target = target,
-    //     .optimize = .ReleaseFast,
-    // });
-    // const sdl_artifact = sdl_dep.artifact("SDL2");
+    const sdl_dep = b.dependency("sdl-zig", .{
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const sdl_artifact = sdl_dep.artifact("SDL2");
 
     const entities_mod = b.createModule(.{
         .root_source_file = b.path("src/entities.zig"),
@@ -28,6 +28,9 @@ pub fn build(b: *std.Build) void {
     const stdx_mod = b.createModule(.{
         .root_source_file = b.path("src/stdx.zig"),
     });
+    const c_mod = b.createModule(.{
+        .root_source_file = b.path("src/c.zig"),
+    });
 
     const exe = b.addExecutable(.{
         .name = "gtd",
@@ -37,7 +40,7 @@ pub fn build(b: *std.Build) void {
     });
 
     exe.linkLibrary(raylib_artifact);   
-    // exe.linkLibrary(sdl_artifact);
+    exe.linkLibrary(sdl_artifact);
 
 
     exe.root_module.addImport("raylib", raylib_mod);
@@ -46,6 +49,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("entities", entities_mod);
     exe.root_module.addImport("game", game_mod);
     exe.root_module.addImport("stdx", stdx_mod);
+    exe.root_module.addImport("c", c_mod);
 
     b.installArtifact(exe);
 
@@ -64,6 +68,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    exe_unit_tests.linkLibrary(sdl_artifact);
+
+    exe_unit_tests.root_module.addImport("entities", entities_mod);
+    exe_unit_tests.root_module.addImport("game", game_mod);
+    exe_unit_tests.root_module.addImport("stdx", stdx_mod);
+    exe_unit_tests.root_module.addImport("c", c_mod);
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 

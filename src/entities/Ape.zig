@@ -1,6 +1,6 @@
 const std = @import("std");
-const raylib = @import("raylib");
 const stdx = @import("stdx");
+const c = @import("c");
 
 const enums = std.enums;
 const math = std.math;
@@ -8,12 +8,10 @@ const mem = std.mem;
 const meta = std.meta;
 const simd = std.simd;
 
-const raymath = raylib.math;
-
 const Allocator = mem.Allocator;
 const SimdVec = stdx.SimdVec;
 const ThreadPool = stdx.ThreadPool;
-const Vector2 = raylib.Vector2;
+const Vec2D = stdx.Vec2D;
 
 const assert = std.debug.assert;
 
@@ -62,7 +60,7 @@ pub const Attack = union {
     none: void,
 
     pub const Projectile = struct {
-        position: Vector2,
+        position: Vec2D,
         trajectory: Projectile.Trajectory,
         damage: f64,
         pierce: u32,
@@ -91,9 +89,9 @@ pub const Attack = union {
             /// Doesn't move at all.
             static: void,
             /// Targets a fixed point.
-            straight: Vector2,
+            straight: Vec2D,
             /// Targets a moving position (e.g. of a `Goon`).
-            seeking: *Vector2,
+            seeking: *Vec2D,
             /// Trajectory that requires special calculations, e.g. a curve.
             special: *const fn (projectile: *Projectile) void,
 
@@ -206,8 +204,8 @@ pub const Attack = union {
                     list: *Projectile.Block.List,
                     damage: f64,
                     max_pierce: u32,
-                    positions: [*]Vector2,
-                    trajectories: [*]Vector2,
+                    positions: [*]Vec2D,
+                    trajectories: [*]Vec2D,
                     count: usize,
                 ) usize {
                     var spawned: usize = if (list.getCurrentBlock()) |current_block| blk: {
@@ -226,8 +224,8 @@ pub const Attack = union {
                     list: *Projectile.Block.List,
                     damage: f64,
                     max_pierce: u32,
-                    positions: [*]Vector2,
-                    trajectories: [*]Vector2,
+                    positions: [*]Vec2D,
+                    trajectories: [*]Vec2D,
                     count: usize,
                 ) Allocator.Error!void {
                     if (list.spawn(damage, max_pierce, positions, trajectories, count) != count) {
@@ -257,7 +255,7 @@ pub const Attack = union {
                 speed_linear: f32,
                 speed_angular: f32,
                 aoe_on_hit_radius: f32,
-                color: raylib.Color,
+                color: c.SDL_Color,
 
                 spawn_pattern: SpawnPattern,
 
@@ -271,7 +269,7 @@ pub const Attack = union {
                     },
                 };
 
-                pub const spawnFn = fn (list: *Projectile.Block.List, damage: f64, max_pierce: u32, origin_pos: Vector2) usize;
+                pub const spawnFn = fn (list: *Projectile.Block.List, damage: f64, max_pierce: u32, origin_pos: Vec2D) usize;
             };
 
             const BoolSimdVec = @Vector(Projectile.Block.capacity, bool);
@@ -281,8 +279,8 @@ pub const Attack = union {
                 block: *Projectile.Block,
                 damage: f32,
                 max_pierce: u32,
-                positions: [*]Vector2,
-                trajectories: [*]Vector2,
+                positions: [*]Vec2D,
+                trajectories: [*]Vec2D,
                 count: usize,
             ) usize {
                 for (0..count) |i| {
@@ -299,8 +297,8 @@ pub const Attack = union {
                 block: *Projectile.Block,
                 damage: f32,
                 max_pierce: u32,
-                position: Vector2,
-                trajectory: Vector2,
+                position: Vec2D,
+                trajectory: Vec2D,
             ) bool {
                 const next_free_idx = block.is_free.toggleFirstSet() orelse {
                     @branchHint(.cold);
@@ -350,7 +348,7 @@ pub const Attack = union {
     };
 
     pub const AoE = struct {
-        center: Vector2,
+        center: Vec2D,
         radius: f32,
         damage: f32,
         pierce: u32,

@@ -1,7 +1,7 @@
 const std = @import("std");
-const raylib = @import("raylib");
 const entities = @import("entities");
 const stdx = @import("stdx");
+const c = @import("c");
 
 const math = std.math;
 const mem = std.mem;
@@ -18,6 +18,7 @@ const Effect = entities.Effect;
 const CollisionMap = entities.CollisionMap;
 const Map = @import("Map.zig");
 const Round = @import("Round.zig");
+const Vec2D = stdx.Vec2D;
 
 
 // game state
@@ -29,7 +30,7 @@ arena: ArenaAllocator,
 draw_target: raylib.RenderTexture2D,
 
 map: *Map,
-background: raylib.Texture2D,
+background: c.SDL_Texture,
 
 difficulty: Difficulty,
 mode: Mode,
@@ -432,6 +433,10 @@ pub fn updateGoonBlock(task: *Task) void {
 }
 
 pub fn updateScreenDims(state: *State, screen_width: u32, screen_height: u32) void {
+
+}
+
+pub fn run(state: *State) !void {
 
 }
 

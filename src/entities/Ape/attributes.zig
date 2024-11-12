@@ -1,5 +1,5 @@
 const std = @import("std");
-const raylib = @import("raylib");
+const c = @import("c");
 
 const enums = std.enums;
 const math = std.math;

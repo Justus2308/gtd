@@ -9,6 +9,9 @@ const expect = std.testing.expext;
 const cache_line = std.atomic.cache_line;
 
 
+pub const Aabb = @import("stdx/aabb.zig").Aabb;
+pub const Vec2D = @import("stdx/vec2d.zig").Vec2D;
+
 const memory_pool = @import("stdx/memory_pool.zig");
 pub const MemoryPool = memory_pool.MemoryPool;
 pub const MemoryPoolAligned = memory_pool.MemoryPoolAligned;
@@ -115,4 +118,18 @@ pub fn CacheLinePadded(comptime T: type) type {
             return .{ .data = data };
         }
     };
+}
+
+/// from `std.simd`
+pub fn vectorLength(comptime VectorType: type) comptime_int {
+    return switch (@typeInfo(VectorType)) {
+        .vector => |info| info.len,
+        .array => |info| info.len,
+        else => @compileError("Invalid type " ++ @typeName(VectorType)),
+    };
+}
+
+test {
+    _ = Aabb;
+    _ = Vec2D;
 }

@@ -1,6 +1,7 @@
 const std = @import("std");
-const raylib = @import("raylib");
+const c = @import("c");
 const entities = @import("entities");
+const stdx = @import("stdx");
 
 const enums = std.enums;
 const math = std.math;
@@ -12,6 +13,8 @@ const Kind = Goon.Kind;
 
 const Damage = entities.Damage;
 const Effect = entities.Effect;
+
+const Vec2D = stdx.Vec2D;
 
 const assert = std.debug.assert;
 
@@ -167,7 +170,7 @@ pub const Immutable = extern struct {
 };
 
 pub const Mutable = struct {
-    position: raylib.Vector2,
+    position: Vec2D,
     hp: f64,
     speed: f32,
     kind: Kind,
@@ -228,7 +231,7 @@ pub const Template = packed struct(u16) {
 
     pub inline fn resolve(
         template: Template,
-        position: raylib.Vector2,
+        position: Vec2D,
         hp_scaling: f64,
         speed_scaling: f32,
     ) Mutable {

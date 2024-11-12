@@ -1,9 +1,10 @@
 const std = @import("std");
-const raylib = @import("raylib");
-const raymath = raylib.math;
+const stdx = @import("stdx");
+const c = @import("c");
 
-const Rectangle = raylib.Rectangle;
-const Vector2 = raylib.Vector2;
+const Vec2D = stdx.Vec2D;
+
+const assert = std.debug.assert;
 
 
 /// `BitSet` layout: `[h0v0,h0v1,...,h0vn, h1v0,h1v1,...,h1vn, ..., hnv0,hnv1,...,hnvn]`
@@ -11,11 +12,17 @@ pub const CollisionMap = struct {
     bits: BitSet,
     h_pps: f32,
     v_pps: f32,
+
+    // pps ~ pixels per segment
     
 
     pub const horizontal_seg_count = 16;
     pub const vertical_seg_count = 8;
     pub const total_seg_count = horizontal_seg_count * vertical_seg_count;
+
+    comptime {
+        assert(total_seg_count > 0);
+    }
 
     const BitSet = std.bit_set.StaticBitSet(total_seg_count);
 
@@ -35,7 +42,7 @@ pub const CollisionMap = struct {
         map.v_pps = @as(f32, @floatFromInt(screen_height)) / @as(f32, @floatFromInt(vertical_seg_count));
     }
 
-    pub fn mapPositions(map: *CollisionMap, positions: []Vector2, radius: f32) void {
+    pub fn mapPositions(map: *CollisionMap, positions: []Vec2D, radius: f32) void {
         for (positions) |position| {
             for (0..horizontal_seg_count) |h_seg| {
                 const h_seg_fp: f32 = @floatFromInt(h_seg);
@@ -48,7 +55,7 @@ pub const CollisionMap = struct {
                         .height = map.v_pps,
                     };
                     if (raylib.checkCollisionCircleRec(position, radius, segment)) {
-                        map.bits.set((h_seg * vertical_seg_count) + v_seg);
+                        map.bits.set(segmentIdx(h_seg, v_seg));
                     }
                 }
             }
@@ -59,18 +66,25 @@ pub const CollisionMap = struct {
         map.bits.setUnion(with);
     }
 
-    pub fn needsCollisionCheck(map: *const CollisionMap, collider: Rectangle) bool {
-        const h_seg_min: usize = @intFromFloat(@divFloor(collider.x, horizontal_seg_count));
-        const h_seg_max: usize = @intFromFloat(std.math.divCeil(collider.x + collider.width, horizontal_seg_count) catch unreachable);
+    /// Check whether there are any registered goons in segment of pos
+    pub fn needsCollisionCheck(map: *const CollisionMap, pos: Vec2D) bool {
+        // const h_seg: usize = @intFromFloat(@divFloor(pos.x, @as(f32, @floatFromInt(horizontal_seg_count))));
+        // const v_seg: usize = @intFromFloat(@divFloor(pos.y, @as(f32, @floatFromInt(vertical_seg_count))));
+        const h_seg, const v_seg = segmentOfPosition(pos);
+        return map.bits.isSet(segmentIdx(h_seg, v_seg));
+    }
 
-        const v_seg_min: usize = @intFromFloat(@divFloor(collider.y, vertical_seg_count));
-        const v_seg_max: usize = @intFromFloat(std.math.divCeil(collider.y + collider.height, vertical_seg_count) catch unreachable);
+    inline fn segmentOfPosition(pos: Vec2D) struct {
+        h_seg: usize,
+        v_seg: usize,
+    } {
+        return .{
+            .h_seg = @as(usize, @intFromFloat(pos.x)) / horizontal_seg_count,
+            .v_seg = @as(usize, @intFromFloat(pos.y)) / vertical_seg_count,
+        };
+    }
 
-        var collisions = BitSet.initEmpty();
-        for (h_seg_min..h_seg_max) |h_seg| {
-            const offset = (h_seg * vertical_seg_count);
-            collisions.setRangeValue(.{ offset+v_seg_min, offset+v_seg_max+1 }, true);
-        }
-        return (map.bits.intersectWith(collisions).count() > 0);
+    inline fn segmentIdx(h_seg: usize, v_seg: usize) usize {
+        return (h_seg * vertical_seg_count) + v_seg;
     }
 };
