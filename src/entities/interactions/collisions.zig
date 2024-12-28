@@ -43,6 +43,8 @@ pub const CollisionMap = struct {
     }
 
     pub fn mapPositions(map: *CollisionMap, positions: []Vec2D, radius: f32) void {
+        stdx.todo("fix this and use simd");
+
         for (positions) |position| {
             for (0..horizontal_seg_count) |h_seg| {
                 const h_seg_fp: f32 = @floatFromInt(h_seg);

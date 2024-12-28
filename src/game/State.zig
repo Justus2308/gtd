@@ -95,6 +95,8 @@ pub fn init(
     map: *const Map,
     mode: Mode,
     difficulty: Difficulty,
+    screen_width: u32,
+    screen_height: u32,
 ) Allocator.Error!State {
     assert(mode != .chimps or difficulty == .hard);
     const arena = ArenaAllocator.init(allocator);
@@ -114,9 +116,7 @@ pub fn init(
         .hp = if (mode == .chimps) 1 else 100,
         .shield = if (mode == .chimps) 0 else 25,
         .pops = 0,
-        .cash = switch (difficulty) {
-            // ...
-        },
+        .cash = 650,
 
         .scaling = .{},
 
@@ -130,8 +130,16 @@ pub fn init(
 
         .goon_immutable_ptr = &Goon.immutable_earlygame,
 
+        .collision_map = stdx.CacheLinePadded(CollisionMap).init(
+            CollisionMap.init(screen_width, screen_height)
+        ),
+
         .apes = Ape.Mutable.List.empty,
-        .goon_blocks = Goon.Block.List.init(arena.allocator(), ),
+        .effects = Effect.List.empty,
+
+        .goon_blocks = Goon.Block.List.init(arena.allocator(), 1024*4),
+        .projectile_blocks = Ape.Attack.Projectile.Block.List
+
     };
 }
 

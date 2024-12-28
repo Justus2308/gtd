@@ -8,7 +8,6 @@ const expect = std.testing.expext;
 
 const cache_line = std.atomic.cache_line;
 
-
 pub const Aabb = @import("stdx/aabb.zig").Aabb;
 pub const Vec2D = @import("stdx/vec2d.zig").Vec2D;
 
@@ -43,7 +42,6 @@ pub fn SimdVec(comptime length: comptime_int, comptime T: type) type {
         pub const len = length;
         pub const len2 = simd.suggestVectorLength(VectorElem) orelse 1;
 
-
         pub fn splat(value: ScalarElem) Self {
             return .{ .vector = @splat(@as(VectorElem, @bitCast(value))) };
         }
@@ -56,13 +54,11 @@ pub fn SimdVec(comptime length: comptime_int, comptime T: type) type {
             return @as([*]ScalarElem, @ptrCast(@alignCast(self)))[0..Self.len];
         }
 
-
         comptime {
             assert(@bitSizeOf(ScalarType) == @bitSizeOf(VectorType));
         }
     };
 }
-
 
 const max_simd_ops_per_batch = 8;
 
