@@ -9,13 +9,6 @@ const expect = std.testing.expext;
 const cache_line = std.atomic.cache_line;
 
 
-pub const Aabb = @import("stdx/aabb.zig").Aabb;
-pub const Vec2D = @import("stdx/vec2d.zig").Vec2D;
-
-const memory_pool = @import("stdx/memory_pool.zig");
-pub const MemoryPool = memory_pool.MemoryPool;
-pub const MemoryPoolAligned = memory_pool.MemoryPoolAligned;
-
 pub const ThreadPool = @import("stdx/ThreadPool.zig");
 
 /// Thin wrapper around basic SIMD vector functionality to
@@ -127,9 +120,4 @@ pub fn vectorLength(comptime VectorType: type) comptime_int {
         .array => |info| info.len,
         else => @compileError("Invalid type " ++ @typeName(VectorType)),
     };
-}
-
-test {
-    _ = Aabb;
-    _ = Vec2D;
 }

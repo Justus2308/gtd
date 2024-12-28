@@ -1,7 +1,7 @@
 const std = @import("std");
 const entities = @import("entities");
 const stdx = @import("stdx");
-const c = @import("c");
+const raylib = @import("raylib");
 
 const math = std.math;
 const mem = std.mem;
