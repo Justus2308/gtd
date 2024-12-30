@@ -1,6 +1,6 @@
 const std = @import("std");
 const stdx = @import("stdx");
-const c = @import("c");
+const geo = @import("geo");
 
 const enums = std.enums;
 const math = std.math;
@@ -11,7 +11,7 @@ const simd = std.simd;
 const Allocator = mem.Allocator;
 const SimdVec = stdx.SimdVec;
 const ThreadPool = stdx.ThreadPool;
-const Vec2D = stdx.Vec2D;
+const Vec2D = geo.points.Vec2D;
 
 const assert = std.debug.assert;
 
@@ -73,7 +73,7 @@ pub const Attack = union {
             0,
             .{
                 .dart = .{
-                    
+
                 },
             },
         );
@@ -111,7 +111,7 @@ pub const Attack = union {
         /// Determines projectile size and sprites, stored separately
         pub const Kind = enum(u8) {
             dart,
-            
+
             pub const Data = struct {
                 /// Sprite must contain fixed part and recolorable part.
                 sprite_path: []const u8,

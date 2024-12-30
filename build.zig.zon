@@ -23,15 +23,15 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .@"raylib-zig" = .{
-            .url = "https://github.com/Not-Nik/raylib-zig/archive/devel.tar.gz",
-            .hash = "12202f8c415153088be8df39a51e0a4c9d402afd403422a0dcc9afdd417e437a6fdb",
-        },
+        // .@"raylib-zig" = .{
+        //     .url = "https://github.com/Not-Nik/raylib-zig/archive/devel.tar.gz",
+        //     .hash = "12202f8c415153088be8df39a51e0a4c9d402afd403422a0dcc9afdd417e437a6fdb",
+        // },
         // TODO finalize used version
-        .@"sdl-zig" = .{
-            .url = "https://github.com/allyourcodebase/SDL/archive/main.tar.gz",
-            .hash = "122072b418255f7e5fa0ba6de26445fdaeff16420b4e0cf6bec7567efa1b302ba878",
-        },
+        // .@"sdl-zig" = .{
+        //     .url = "https://github.com/allyourcodebase/SDL/archive/main.tar.gz",
+        //     .hash = "122072b418255f7e5fa0ba6de26445fdaeff16420b4e0cf6bec7567efa1b302ba878",
+        // },
     },
     .paths = .{
         "build.zig",

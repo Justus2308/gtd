@@ -10,6 +10,7 @@ const cache_line = std.atomic.cache_line;
 
 
 pub const ThreadPool = @import("stdx/ThreadPool.zig");
+pub const integrate = @import("stdx/integrate.zig");
 
 /// Thin wrapper around basic SIMD vector functionality to
 /// make it easier to work with enums and slices.
@@ -37,7 +38,7 @@ pub fn SimdVec(comptime length: comptime_int, comptime T: type) type {
         pub const len2 = simd.suggestVectorLength(VectorElem) orelse 1;
 
 
-        pub fn splat(value: ScalarElem) Self {
+        pub inline fn splat(value: ScalarElem) Self {
             return .{ .vector = @splat(@as(VectorElem, @bitCast(value))) };
         }
 
@@ -52,6 +53,33 @@ pub fn SimdVec(comptime length: comptime_int, comptime T: type) type {
 
         comptime {
             assert(@bitSizeOf(ScalarType) == @bitSizeOf(VectorType));
+        }
+    };
+}
+
+pub fn SimdBitVec(comptime length: comptime_int) type {
+    comptime if (length % @bitSizeOf(usize) != 0) {
+        @compileError(std.fmt.comptimePrint("length needs to be a multiple of {d}", .{ @bitSizeOf(usize) }));
+    };
+    return extern union {
+        set: BitSet,
+        bits: BitVector,
+        bools: BoolVector,
+
+        pub const len = length;
+
+        pub const BitSet = std.bit_set.StaticBitSet(length);
+        pub const BitVector = @Vector(length, u1);
+        pub const BoolVector = @Vector(length, bool);
+
+        const Self = @This();
+
+        pub inline fn splat(value: bool) Self {
+            return .{ .bools = @splat(value) };
+        }
+
+        comptime {
+            assert(@bitSizeOf(Self) == length);
         }
     };
 }

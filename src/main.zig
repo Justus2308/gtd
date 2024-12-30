@@ -1,6 +1,4 @@
 const std = @import("std");
-const c = @import("c");
-const raylib = @import("raylib");
 
 const panic = std.debug.panic;
 

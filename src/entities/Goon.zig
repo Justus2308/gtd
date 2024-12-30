@@ -1,5 +1,4 @@
 const std = @import("std");
-const raylib = @import("raylib");
 const game = @import("game");
 const stdx = @import("stdx");
 
@@ -86,7 +85,7 @@ pub const Block align(mem.page_size) = struct {
     pub const DependencyMap = packed struct(u32) {
 
     };
- 
+
     pub fn create(pool: *Block.Pool, id_offset: u32) *Block {
         const block = try pool.create();
         defer pool.destroy(block);

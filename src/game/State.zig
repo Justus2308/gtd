@@ -1,7 +1,7 @@
 const std = @import("std");
 const entities = @import("entities");
 const stdx = @import("stdx");
-const raylib = @import("raylib");
+const geo = @import("geo");
 
 const math = std.math;
 const mem = std.mem;
@@ -18,8 +18,7 @@ const Effect = entities.Effect;
 const CollisionMap = entities.CollisionMap;
 const Map = @import("Map.zig");
 const Round = @import("Round.zig");
-const Vec2D = stdx.Vec2D;
-
+const Vec2D = geo.points.Vec2D;
 
 // game state
 allocator: Allocator,
@@ -237,7 +236,7 @@ fn consumeExtraAllocations(state: *State) Allocator.Error!void {
             }
         }
     }
-    // we don't need to do anything else since all the memory we just 
+    // we don't need to do anything else since all the memory we just
     // traversed is inside our arena which we will reset soon.
 }
 

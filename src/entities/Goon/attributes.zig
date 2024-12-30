@@ -1,7 +1,7 @@
 const std = @import("std");
-const c = @import("c");
 const entities = @import("entities");
 const stdx = @import("stdx");
+const geo = @import("geo");
 
 const enums = std.enums;
 const math = std.math;
@@ -14,7 +14,7 @@ const Kind = Goon.Kind;
 const Damage = entities.Damage;
 const Effect = entities.Effect;
 
-const Vec2D = stdx.Vec2D;
+const Vec2D = geo.points.Vec2D;
 
 const assert = std.debug.assert;
 
@@ -179,7 +179,7 @@ pub const Mutable = struct {
 
 
     pub const List = std.MultiArrayList(Mutable);
-    
+
 
     pub const Color = enum(u8) {
         none = 0,

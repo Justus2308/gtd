@@ -1,4 +1,3 @@
-const raylib = @import("raylib");
 const GoonTrace = @import("GoonTrace.zig");
 
 track: Track,

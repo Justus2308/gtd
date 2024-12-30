@@ -1,5 +1,4 @@
 const std = @import("std");
-const c = @import("c");
 
 const enums = std.enums;
 const math = std.math;
@@ -7,10 +6,9 @@ const mem = std.mem;
 const meta = std.meta;
 const simd = std.simd;
 
-const assert = std.debug.assert;
-
-
 const Goon = @import("Goon.zig");
+
+const assert = std.debug.assert;
 
 
 pub const Immutable = extern struct {

@@ -1,7 +1,7 @@
 const std = @import("std");
-const raylib = @import("raylib");
+const stdx = @import("stdx");
 const entities = @import("entities");
-const game = @import("game");
+const geo = @import("geo");
 
 const math = std.math;
 const mem = std.mem;
@@ -10,7 +10,7 @@ const sort = std.sort;
 const Allocator = mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Goon = entities.Goon;
-const Vector2 = raylib.Vector2;
+const Vec2D = geo.points.Vec2D;
 
 const assert = std.debug.assert;
 
@@ -49,7 +49,7 @@ pub fn SegmentHashMap(
             intervals: []Interval,
 
             pub const Interval = struct {
-                start: f32, // TODO save indices here?
+                start: f32,
                 end: f32,
 
                 pub const List = std.ArrayListUnmanaged(Interval);
@@ -94,7 +94,7 @@ pub fn SegmentHashMap(
 
         const Builder = struct {
             allocator: Allocator,
-            can_collide: [total_seg_count]Path.BitSet,
+            can_collide: [total_seg_count]std.bit_set.DynamicBitSetUnmanaged,
             interval_lists: [total_seg_count]Segment.Interval.List,
             max_entity_radius: f32,
             min_angle: f32,
@@ -102,7 +102,7 @@ pub fn SegmentHashMap(
             pub fn init(allocator: Allocator, max_entity_radius: f32) Builder {
                 return .{
                     .allocator = allocator,
-                    .can_collide = [_]Path.BitSet{comptime BitSet.initEmpty()}**total_seg_count,
+                    .can_collide = [_]std.bit_set.DynamicBitSetUnmanaged{.{}}**total_seg_count,
                     .interval_lists = [_]Segment.Interval.List{Segment.Interval.List.empty}**total_seg_count,
                     .max_entity_radius = max_entity_radius,
                     .min_angle = 0.9 * math.acos(@as(f32, 1.0) - @as(f32, 1.0)/max_entity_radius),
@@ -110,19 +110,38 @@ pub fn SegmentHashMap(
             }
 
             pub fn deinit(b: *Builder) void {
-                for (b.interval_lists) |list| {
-                    list.deinit(b.allocator);
+                comptime assert(b.interval_lists.len == b.can_collide.len);
+                for (&b.can_collide, &b.interval_lists) |*cset, *ilist| {
+                    cset.deinit(b.allocator);
+                    ilist.deinit(b.allocator);
                 }
                 b.* = undefined;
             }
 
-            pub fn analyzePath(b: *Builder, path: Path) void {
+            pub fn analyzePath(b: *Builder, path: Path) Allocator.Error!void {
                 // identify all segments that can contain a part of an entity at point p
                 var is_in_segment = BitSet.initEmpty();
 
+                for (&b.can_collide) |*cset| {
+                    errdefer {
+                        var i: usize = 0;
+                        var errset = &b.can_collide[i];
+                        while (errset != cset) : ({
+                            i += 1;
+                            errset = &b.can_collide[i];
+                        }) {
+                            errset.deinit(b.allocator);
+                        }
+                    }
+                    try cset.initEmpty(b.allocator, path.points.len);
+                }
+                errdefer for (&b.can_collide) |*cset| {
+                    cset.deinit(b.allocator);
+                };
+
                 for (path.points, 0..) |p, i| {
                     // 'draw' circle, https://stackoverflow.com/a/58629898/20378526
-                    var d: Vector2 = undefined;
+                    var d: Vec2D = undefined;
                     var angle: f32 = 0.0;
                     while (angle <= 360.0) : (angle += b.min_angle) {
                         d.x = b.max_entity_radius * @cos(angle);
@@ -155,7 +174,7 @@ pub fn SegmentHashMap(
             }
 
             pub fn makeIntervals(b: *Builder, tstep: f32) Allocator.Error!void {
-                for (&b.can_collide, &b.interval_lists) |*coll, *ilist| {
+                for (&b.can_collide, &b.interval_lists) |*cset, *ilist| {
                     errdefer {
                         var i: usize = 0;
                         var errlist = &b.interval_lists[i];
@@ -168,7 +187,7 @@ pub fn SegmentHashMap(
                         ilist.clearAndFree(b.allocator);
                     }
 
-                    var iter = coll.iterator(.{});
+                    var iter = cset.iterator(.{});
                     var curr = iter.next() orelse continue;
                     var start = curr;
                     while (iter.next()) |next| {
@@ -196,13 +215,16 @@ pub fn SegmentHashMap(
                     .segments = undefined,
                 };
                 for (&b.interval_lists, 0..) |*ilist, i| {
-                    errdefer for (0..i) |j| {
-                        b.interval_lists[j] = Segment.Interval.List.fromOwnedSlice(self.segments[j].intervals);
-                        self.segments[j].intervals = undefined;
+                    errdefer for (0..i) |e| {
+                        b.interval_lists[e] = Segment.Interval.List.fromOwnedSlice(self.segments[e].intervals);
+                        self.segments[e].intervals = undefined;
                     };
                     self.segments[i] = .{
                         .intervals = try ilist.toOwnedSlice(b.allocator),
                     };
+                }
+                for (&b.can_collide) |*cset| {
+                    cset.deinit(b.allocator);
                 }
                 b.* = undefined;
                 return self;
@@ -212,44 +234,15 @@ pub fn SegmentHashMap(
 
         //tmp
         const Path = struct {
-            points: []Vector2,
+            points: []Vec2D,
             tstep: f32,
-
-            pub const sample_count = 1024;
-            pub const BitSet = std.bit_set.StaticBitSet(sample_count);
         };
-        // pub fn init2(allocator: Allocator, path: Path) Self {
-        //     const tstep = {};
 
-        //     var interval_lists = [_]Segment.Interval.List{Segment.Interval.List.empty}**total_seg_count;
-
-        //     var interval: Segment.Interval = .{
-        //         .start = path.points[0],
-        //         .end = path.points[0],
-        //     };
-        //     var is_in_segment = BitSet.initEmpty();
-        //     var last_hash = hash(interval.start);
-
-        //     for (path.points[1..path.points.len]) |point| {
-        //         const hashed = hash(point);
-        //         if (hashed != last_hash) { // TODO expand segment
-        //             var iter = is_in_segment.iterator();
-        //             while (iter.next(.{})) |idx| {
-        //                 interval_lists[idx].append(allocator, interval);
-        //             }
-        //             interval.start = point;
-        //             is_in_segment.unsetAll();
-        //         }
-        //         is_in_segment.set(hashed);
-        //         interval.end = point;
-        //         last_hash = hashed;
-        //     }
-        // }
         pub fn init(allocator: Allocator, path: Path, max_entity_radius: f32) Allocator.Error!Self {
             var b = Builder.init(allocator, max_entity_radius);
             errdefer b.deinit();
 
-            b.analyzePath(path);
+            try b.analyzePath(path);
             try b.makeIntervals(path.tstep);
 
             const self = try b.finalize();
@@ -258,7 +251,7 @@ pub fn SegmentHashMap(
 
 
         /// R x R - - > 0..horizontal_seg_count x 0..vertical_seg_count ----> 0..total_seg_count
-        inline fn hash(point: Vector2) u32 {
+        inline fn hash(point: Vec2D) u32 {
             const hnorm = point.x / width_normalized;
             const vnorm = point.y / height_normalized;
             const hseg: u32 = @intFromFloat(hnorm * comptime @as(f32, @floatFromInt(horizontal_seg_count)));
@@ -268,10 +261,10 @@ pub fn SegmentHashMap(
             return hashed;
         }
 
-        pub fn update(self: *Self, game_state: *game.State) void {
+        pub fn update(self: *Self, goons: *Goon.Block.List) void {
             // TODO get all entities from game_state
             for (self.entities.items) |*entity| {
-                entity.*.t = game_state.goon_blocks.getGoonAttr(entity.idx, .t);
+                entity.*.t = goons.getGoonAttr(entity.idx, .t);
             }
             sort.pdq(Entity, self.entities.items, {}, entityLessThanFn);
         }

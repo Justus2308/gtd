@@ -1,8 +1,8 @@
 const std = @import("std");
 const stdx = @import("stdx");
-const c = @import("c");
+const geo = @import("geo");
 
-const Vec2D = stdx.Vec2D;
+const Vec2D = geo.points.Vec2D;
 
 const assert = std.debug.assert;
 
@@ -14,7 +14,7 @@ pub const CollisionMap = struct {
     v_pps: f32,
 
     // pps ~ pixels per segment
-    
+
 
     pub const horizontal_seg_count = 16;
     pub const vertical_seg_count = 8;

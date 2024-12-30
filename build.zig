@@ -5,51 +5,45 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const raylib_dep = b.dependency("raylib-zig", .{
-        .target = target,
+    // const raylib_dep = b.dependency("raylib-zig", .{
+    //     .target = target,
+    //     .optimize = optimize,
+    // });
+    // const raylib_mod = raylib_dep.module("raylib"); // main raylib module
+    // const raygui_mod = raylib_dep.module("raygui"); // raygui module
+    // const raylib_artifact = raylib_dep.artifact("raylib"); // raylib C library
+
+    // const sdl_dep = b.dependency("sdl-zig", .{
+    //     .target = target,
+    //     .optimize = .ReleaseFast,
+    // });
+    // const sdl_artifact = sdl_dep.artifact("SDL2");
+
+    const imports = [_]std.Build.Module.Import{
+        createImport(b, "entities", optimize, target),
+        createImport(b, "game", optimize, target),
+        createImport(b, "stdx", optimize, target),
+        createImport(b, "geo", optimize, target),
+        // createImport(b, "c", optimize, target),
+    };
+
+    const exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
         .optimize = optimize,
-    });
-    const raylib_mod = raylib_dep.module("raylib"); // main raylib module
-    const raygui_mod = raylib_dep.module("raygui"); // raygui module
-    const raylib_artifact = raylib_dep.artifact("raylib"); // raylib C library
-
-    const sdl_dep = b.dependency("sdl-zig", .{
         .target = target,
-        .optimize = .ReleaseFast,
+        .imports = &imports,
     });
-    const sdl_artifact = sdl_dep.artifact("SDL2");
-
-    const entities_mod = b.createModule(.{
-        .root_source_file = b.path("src/entities.zig"),
-    });
-    const game_mod = b.createModule(.{
-        .root_source_file = b.path("src/game.zig"),
-    });
-    const stdx_mod = b.createModule(.{
-        .root_source_file = b.path("src/stdx.zig"),
-    });
-    const c_mod = b.createModule(.{
-        .root_source_file = b.path("src/c.zig"),
-    });
-
     const exe = b.addExecutable(.{
         .name = "gtd",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = exe_mod,
     });
 
-    exe.linkLibrary(raylib_artifact);   
-    exe.linkLibrary(sdl_artifact);
+    // exe.linkLibrary(raylib_artifact);
+    // exe.linkLibrary(sdl_artifact);
 
 
-    exe.root_module.addImport("raylib", raylib_mod);
-    exe.root_module.addImport("raygui", raygui_mod);
-
-    exe.root_module.addImport("entities", entities_mod);
-    exe.root_module.addImport("game", game_mod);
-    exe.root_module.addImport("stdx", stdx_mod);
-    exe.root_module.addImport("c", c_mod);
+    // exe.root_module.addImport("raylib", raylib_mod);
+    // exe.root_module.addImport("raygui", raygui_mod);
 
     b.installArtifact(exe);
 
@@ -63,37 +57,40 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const exe_unit_tests = b.addTest(.{
+
+    const exe_unit_tests_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &imports,
+    });
+    const exe_unit_tests = b.addTest(.{
+        .root_module = exe_unit_tests_mod,
     });
 
-    exe_unit_tests.linkLibrary(sdl_artifact);
-
-    exe_unit_tests.root_module.addImport("entities", entities_mod);
-    exe_unit_tests.root_module.addImport("game", game_mod);
-    exe_unit_tests.root_module.addImport("stdx", stdx_mod);
-    exe_unit_tests.root_module.addImport("c", c_mod);
+    // exe_unit_tests.linkLibrary(sdl_artifact);
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
+}
 
-    const memory_pool_benchmark = b.addExecutable(.{
-        .name = "memory_pool_benchmark",
-        .root_source_file = b.path("tools/memory_pool_benchmark.zig"),
-        .target = target,
+fn createImport(
+    b: *std.Build,
+    name: []const u8,
+    optimize: std.builtin.OptimizeMode,
+    target: std.Build.ResolvedTarget,
+) std.Build.Module.Import {
+    const source_path = b.path(b.fmt("src/{s}.zig", .{ name }));
+    const module = b.createModule(.{
+        .root_source_file = source_path,
         .optimize = optimize,
+        .target = target
     });
-    memory_pool_benchmark.root_module.addImport("stdx", stdx_mod);
-
-    const memory_pool_benchmark_install = b.addInstallArtifact(memory_pool_benchmark, .{});
-
-    const memory_pool_benchmark_cmd = b.addRunArtifact(memory_pool_benchmark);
-    memory_pool_benchmark_cmd.step.dependOn(&memory_pool_benchmark_install.step);
-
-    const memory_pool_benchmark_step = b.step("benchmark-mem-pool", "Run memory pool benchmark");
-    memory_pool_benchmark_step.dependOn(&memory_pool_benchmark_cmd.step);
+    const import = std.Build.Module.Import{
+        .name = b.dupe(name),
+        .module = module,
+    };
+    return import;
 }
