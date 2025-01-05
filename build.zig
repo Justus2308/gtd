@@ -26,6 +26,7 @@ pub fn build(b: *std.Build) void {
         createImport(b, "geo", optimize, target),
         // createImport(b, "c", optimize, target),
     };
+    addImportTests(b, &imports);
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -93,4 +94,22 @@ fn createImport(
         .module = module,
     };
     return import;
+}
+
+fn addImportTests(b: *std.Build, imports: []const std.Build.Module.Import) void {
+    for (imports) |import| {
+        for (imports) |imp| {
+            import.module.addImport(imp.name, imp.module);
+        }
+        const test_name = b.fmt("test_{s}", .{ import.name });
+        const module_test = b.addTest(.{
+            .name = test_name,
+            .root_module = import.module,
+        });
+        const run_module_test = b.addRunArtifact(module_test);
+
+        const test_description = b.fmt("Run unit tests of module '{s}'", .{ import.name });
+        const test_step = b.step(test_name, test_description);
+        test_step.dependOn(&run_module_test.step);
+    }
 }

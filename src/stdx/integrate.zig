@@ -5,9 +5,11 @@ const testing = std.testing;
 const assert = std.debug.assert;
 
 
+pub const default_epsilon = math.pow(f32, 10.0, -6.0);
+
 pub const GaussLegendreQuadOptions = struct {
     /// max error tolerance
-    eps: f32 = math.pow(f32, 1.0, -6.0),
+    eps: f32 = default_epsilon,
     /// number of sample points, result is exact for polynomials of degree `2*n - 1`
     n: u16 = 8,
 };
@@ -26,7 +28,7 @@ pub fn gaussLegendreQuad(
 
 pub const SimpsonAdaptiveOptions = struct {
     /// max error tolerance
-    eps: f32 = math.pow(f32, 1.0, -6.0),
+    eps: f32 = default_epsilon,
     /// recursion depth limit
     limit: u16 = 50,
 };
