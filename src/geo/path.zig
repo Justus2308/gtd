@@ -2,6 +2,7 @@ const std = @import("std");
 const geo = @import("geo");
 
 const mem = std.mem;
+const testing = std.testing;
 
 const Allocator = mem.Allocator;
 const Vec2D = geo.points.Vec2D;
@@ -10,34 +11,34 @@ const assert = std.debug.assert;
 
 
 pub const Path = struct {
-    subpaths_raw: [max_subpath_count][]Segment,
-    subpath_count: usize,
+    subpaths: [][]const Segment,
 
 
     pub const max_subpath_count = 8;
     pub const max_segment_count = 64;
 
+    const mem_align = @alignOf(*anyopaque);
 
-    pub inline fn build(allocator: Allocator) Path.Builder {
+
+    pub inline fn build(allocator: Allocator) Allocator.Error!Path.Builder {
         return Path.Builder.init(allocator);
     }
 
-    /// Invalidates `path`.
-    pub inline fn edit(path: *Path, allocator: Allocator) Path.Builder {
+    pub inline fn edit(path: Path, allocator: Allocator) Allocator.Error!Path.Builder {
         return Path.Builder.initFromPath(allocator, path);
     }
 
     pub fn deinit(path: *Path, allocator: Allocator) void {
-        var segment_count = 0;
-        for (path.subpaths()) |subpath| {
+        var segment_count: usize = 0;
+        for (path.subpaths) |subpath| {
             segment_count += subpath.len;
         }
-        const raw = path.subpaths_raw[0].ptr[0..segment_count];
+        const subpath_size = (path.subpaths.len * @sizeOf([]Path.Segment));
+        const segment_size = (segment_count * @sizeOf(Path.Segment));
+        const size = subpath_size + segment_size;
+        const raw = @as([*]align(Path.mem_align) u8, @ptrCast(@alignCast(path.subpaths.ptr)))[0..size];
         allocator.free(raw);
-    }
-
-    pub inline fn subpaths(path: *const Path) [][]Segment {
-        return path.subpaths_raw[0..path.subpath_count];
+        path.* = undefined;
     }
 
     pub const Segment = struct {
@@ -60,6 +61,8 @@ pub const Path = struct {
                 reverse,
             };
         };
+
+        pub const Field = std.meta.FieldEnum(Segment);
 
         /// Use this instead of accessing the `tension` field directly
         /// to ensure the value stays within its bounds.
@@ -96,7 +99,7 @@ pub const Path = struct {
                             .start = Vec2D.zero,
                             .tension = 0.0,
                         },
-                        .list_id = id,
+                        .list_id = @intCast(id),
                     },
                 };
                 list.inner.prepend(first);
@@ -108,7 +111,7 @@ pub const Path = struct {
                             .start = Vec2D.zero,
                             .tension = 0.0,
                         },
-                        .list_id = id,
+                        .list_id = @intCast(id),
                     },
                 };
                 list.inner.append(last);
@@ -118,14 +121,14 @@ pub const Path = struct {
             return b;
         }
 
-        pub fn initFromPath(allocator: Allocator, path: *Path) Allocator.Error!Path.Builder {
+        pub fn initFromPath(allocator: Allocator, path: Path) Allocator.Error!Path.Builder {
             var b: Path.Builder = undefined;
             b.pool = Path.Builder.Pool.init(allocator);
             errdefer b.pool.deinit();
 
             b.segment_count = 0;
 
-            for (path.subpaths(), 0..) |subpath, id| {
+            for (path.subpaths, 0..) |subpath, id| {
                 b.segment_lists[id] = .{
                     .inner = .{},
                     .direction = .natural,
@@ -135,7 +138,7 @@ pub const Path = struct {
                     node.* = .{
                         .data = .{
                             .segment = segment,
-                            .list_id = id,
+                            .list_id = @intCast(id),
                         },
                     };
                     b.segment_lists[id].inner.append(node);
@@ -143,7 +146,7 @@ pub const Path = struct {
                 b.segment_count += (subpath.len-2);
             }
 
-            for (path.subpaths().len..Path.max_subpath_count) |id| {
+            for (path.subpaths.len..Path.max_subpath_count) |id| {
                 const list = &b.segment_lists[id];
                 list.* = .{
                     .inner = .{},
@@ -157,7 +160,7 @@ pub const Path = struct {
                             .start = Vec2D.zero,
                             .tension = 0.0,
                         },
-                        .list_id = id,
+                        .list_id = @intCast(id),
                     },
                 };
                 list.inner.prepend(first);
@@ -169,13 +172,12 @@ pub const Path = struct {
                             .start = Vec2D.zero,
                             .tension = 0.0,
                         },
-                        .list_id = id,
+                        .list_id = @intCast(id),
                     },
                 };
                 list.inner.append(last);
             }
 
-            path.deinit(allocator);
             return b;
         }
 
@@ -211,40 +213,48 @@ pub const Path = struct {
             b.* = undefined;
         }
 
-        pub fn finalize(b: *Path.Builder) Allocator.Error!Path {
+        pub fn finalize(b: *Path.Builder, allocator: Allocator) Allocator.Error!Path {
             assert(b.segment_count == b.countSegments());
 
+            var subpath_count: usize = 0;
             var real_segment_count = b.segment_count;
             for (&b.segment_lists) |*list| {
                 if (list.inner.len > 2) {
+                    subpath_count += 1;
                     real_segment_count += 2;
                 }
             }
 
-            const allocator = b.pool.arena.child_allocator;
-            const raw = try allocator.alloc(Segment, real_segment_count);
+            const subpath_size = (subpath_count * @sizeOf([]Path.Segment));
+            const segment_size = (real_segment_count * @sizeOf(Path.Segment));
+            const size = subpath_size + segment_size;
+
+            const raw = try allocator.alignedAlloc(u8, Path.mem_align, size);
             errdefer allocator.free(raw);
 
-            var path = Path{
-                .subpaths_raw = undefined,
-                .subpath_count = 0,
-            };
+            var subpaths = @as([*][]Path.Segment, @ptrCast(@alignCast(raw.ptr)))[0..subpath_count];
 
-            var raw_idx: usize = 0;
+            var subpath_idx: usize = 0;
+            var raw_idx: usize = subpath_size;
             for (&b.segment_lists) |*list| {
                 const count = list.inner.len;
                 if (count > 2) {
-                    path.subpaths_raw[path.subpath_count] = raw[raw_idx..][0..count];
-                    path.subpath_count += 1;
-                    raw_idx += count;
+                    subpaths[subpath_idx] = @as([*]Path.Segment, @ptrCast(@alignCast(raw[raw_idx..])))[0..count];
+                    subpath_idx += 1;
+                    raw_idx += (count * @sizeOf(Path.Segment));
                 }
             }
-            assert(raw_idx == real_segment_count);
+            assert(raw_idx == size);
+
+            const path = Path{
+                .subpaths = @ptrCast(subpaths),
+            };
 
             b.deinit();
             return path;
         }
 
+        // TODO find better way to address segments (tree?)
         pub fn addSegment(
             b: *Path.Builder,
             start: Vec2D,
@@ -280,14 +290,21 @@ pub const Path = struct {
             b.fixEnds(list_id);
         }
 
-        pub fn moveSegment(b: *Path.Builder, node: *SegmentNode, new_start: Vec2D) void {
-            node.data.segment.start = new_start;
-            b.fixEnds(node.data.list_id);
-        }
-
-        pub fn retensionSegment(b: *Path.Builder, node: *SegmentNode, new_tension: f32) void {
-            _ = b;
-            node.data.segment.setTension(new_tension);
+        pub fn editSegment(
+            b: *Path.Builder,
+            node: *SegmentNode,
+            comptime field: Path.Segment.Field,
+            new_value: @FieldType(Path.Segment, @tagName(field)),
+        ) void {
+            comptime switch (field) {
+                .start => {
+                    node.data.segment.start = new_value;
+                    b.fixEnds(node.data.list_id);
+                },
+                .tension => {
+                    node.data.segment.setTension(new_value);
+                },
+            };
         }
 
         fn fixEnds(b: *Path.Builder, list_id: u32) void {
@@ -299,13 +316,13 @@ pub const Path = struct {
             const f_to = first.next.?;
             const f_from = f_to.next.?;
 
-            first.data.segment = Path.Builder.extrapolate(f_from, f_to);
+            first.data.segment = Path.Builder.extrapolate(f_from.data.segment, f_to.data.segment);
 
             const last = b.segment_lists[list_id].inner.last.?;
             const l_to = last.prev.?;
             const l_from = l_to.prev.?;
 
-            last.data.segment = Path.Builder.extrapolate(l_from, l_to);
+            last.data.segment = Path.Builder.extrapolate(l_from.data.segment, l_to.data.segment);
         }
 
         fn extrapolate(from: Path.Segment, to: Path.Segment) Path.Segment {
@@ -327,3 +344,17 @@ pub const Path = struct {
         }
     };
 };
+
+
+test "build Path" {
+    const allocator = testing.allocator;
+    var b = try Path.build(allocator);
+    errdefer b.deinit();
+
+    try b.addSegment(.{ .x = 5.0, .y = 5.0 }, b.segment_lists[0].inner.last.?, b.segment_lists[0].inner.first.?);
+    try b.addSegment(.{ .x = 2.0, .y = 3.0 }, b.segment_lists[0].inner.first.?, b.segment_lists[0].inner.first.?.next.?);
+    b.removeSegment(b.segment_lists[0].inner.last.?.prev.?);
+
+    var path = try b.finalize(testing.allocator);
+    defer path.deinit(testing.allocator);
+}

@@ -64,7 +64,7 @@ fn simpsonAdaptiveAux(
     ia: f32, ib: f32, im: f32,
     rec: i32,
 ) f32 {
-    assert(a < b);
+    assert(a <= b);
 
     const m = (a+b)/2.0;
     const h = (b-a)/2.0;
