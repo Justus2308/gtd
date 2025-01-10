@@ -37,10 +37,10 @@ pub const catmull_rom = struct {
         };
     }
 
-    pub fn length(p1: Vec2D, p2: Vec2D, p3: Vec2D, p4: Vec2D, tension: f32) f32 {
+    pub inline fn length(p1: Vec2D, p2: Vec2D, p3: Vec2D, p4: Vec2D, tension: f32) f32 {
         return catmull_rom.lengthAt(p1, p2, p3, p4, 1.0, tension);
     }
-    pub fn lengthAt(p1: Vec2D, p2: Vec2D, p3: Vec2D, p4: Vec2D, t: f32, tension: f32) f32 {
+    pub inline fn lengthAt(p1: Vec2D, p2: Vec2D, p3: Vec2D, p4: Vec2D, t: f32, tension: f32) f32 {
         return stdx.integrate.simpsonAdaptive(
             catmull_rom.integrandLength,
             .{ p1, p2, p3, p4, tension },
@@ -53,7 +53,8 @@ pub const catmull_rom = struct {
         const dt_norm = dt.length();
         return dt_norm;
     }
-    // TODO lerp pass to guarantee exact distances
+
+    // TODO lerp pass to guarantee exact distances if necessary
     pub fn discretize(
         allocator: Allocator,
         spline: []const Vec2D,
@@ -72,36 +73,38 @@ pub const catmull_rom = struct {
         var carry: f32 = 0.0;
         for (0..(spline.len -| 3)) |i| {
             const len = catmull_rom.length(spline[i+0], spline[i+1], spline[i+2], spline[i+3], tensions[i]);
-            const rlen = len - carry;
+            const rlen = (len - carry);
             if (rlen <= 0.0) {
-                // spline segment is shorter than our step size, skip it
+                // spline segment is shorter than carried-over length, skip it
                 @branchHint(.unlikely);
                 carry -= len;
                 continue;
             }
 
-            const linear_t_step = sample_dist / len;
+            const linear_t_step = (sample_dist / len);
 
             const toff: f32 = blk: {
+                // estimate t offset based on carried-over length and total length of curve
                 if (carry == 0.0) {
+                    @branchHint(.cold);
                     break :blk 0.0;
                 }
-                const rough = carry / len;
+                const rough = (carry / len);
                 const rough_len = catmull_rom.lengthAt(spline[i+0], spline[i+1], spline[i+2], spline[i+3], rough, tensions[i]);
                 const estimate = 0.5 * (rough + (rough_len / carry));
-                std.debug.print("carry={e}, rough={e}, rough_len={e}, estimate={e}\n", .{ carry, rough, rough_len, estimate });
+                // std.debug.print("carry={e}, rough={e}, rough_len={e}, estimate={e}\n", .{ carry, rough, rough_len, estimate });
                 break :blk estimate;
             };
-
-            std.debug.print("carry={e}\n", .{ carry });
 
             var t_prev: f32 = 0.0;
             var t: f32 = toff;
             var required_len = carry;
             while (t <= 1.0) : ({
+                // estimate next t based on previous t and total length of curve
                 const t_step = 0.5 * ((t - t_prev) + linear_t_step);
                 t_prev = t;
                 t += t_step;
+                required_len += sample_dist;
             }) {
                 for (0..max_approx_steps) |_| {
                     // Newton-Rhapson Method
@@ -110,82 +113,20 @@ pub const catmull_rom = struct {
                     const quot = (nom / denom);
                     t -= quot;
                     if (quot < eps) {
+                        @branchHint(.unlikely);
                         break;
                     }
                 }
 
-                std.debug.print("t={e}\n", .{ t });
-                std.debug.print("seg={d} ; len={e}\n", .{ i, stdx.integrate.simpsonAdaptive(
-                    catmull_rom.integrandLength,
-                    .{ spline[i+0], spline[i+1], spline[i+2], spline[i+3], tensions[i] },
-                    t_prev, t,
-                    .{},
-                ) });
-                t_prev = t;
+                // std.debug.print("t={e}\n", .{ t });
+                // std.debug.print("seg={d} ; len={e}\n", .{ i, stdx.integrate.simpsonAdaptive(catmull_rom.integrandLength,
+                //     .{ spline[i+0], spline[i+1], spline[i+2], spline[i+3], tensions[i] }, t_prev, t, .{},) });
 
                 const p = catmull_rom.point(spline[i+0], spline[i+1], spline[i+2], spline[i+3], t, tensions[i]);
                 try samples.append(allocator, p);
-                required_len += sample_dist;
             }
             carry = @rem((required_len - len), sample_dist);
-            std.debug.print("seg={d}, len={e}, required_len={e}, carry={e}\n", .{ i, len, required_len, carry });
-        }
-
-        const slice = try samples.toOwnedSlice(allocator);
-        return slice;
-    }
-
-    pub fn discretize2(
-        allocator: Allocator,
-        spline: []const Vec2D,
-        tensions: []const f32,
-        sample_dist: f32,
-    ) Allocator.Error![]Vec2D {
-        assert(sample_dist > 0.0);
-
-        var samples = std.ArrayListUnmanaged(Vec2D).empty;
-        errdefer samples.deinit(allocator);
-
-        var carry: f32 = 0.0;
-        for (0..(spline.len -| 3)) |i| {
-            const len = catmull_rom.length(spline[i+0], spline[i+1], spline[i+2], spline[i+3], tensions[i]);
-            var rlen = len - carry;
-            if (rlen <= 0.0) {
-                // spline segment is shorter than our step size, skip it
-                @branchHint(.unlikely);
-                carry -= len;
-                continue;
-            }
-            const max_sample_count = @divFloor(rlen, sample_dist);
-            const rem = @rem(rlen, sample_dist);
-
-            const toff = carry / len;
-            const trem = rem / len;
-            const tstep = (@as(f32, 1.0) - toff - trem) / max_sample_count;
-
-            std.debug.print("seg={d} ; carry={e}\n", .{ i, stdx.integrate.simpsonAdaptive(
-                catmull_rom.integrandLength,
-                .{ spline[i+0], spline[i+1], spline[i+2], spline[i+3], tensions[i] },
-                0.0, toff,
-                .{},
-            ) });
-
-            var t: f32 = toff;
-            while (rlen > 0.0) : ({
-                rlen -= sample_dist;
-                t += tstep;
-            }) {
-                std.debug.print("seg={d} ; len={e}\n", .{ i, stdx.integrate.simpsonAdaptive(
-                    catmull_rom.integrandLength,
-                    .{ spline[i+0], spline[i+1], spline[i+2], spline[i+3], tensions[i] },
-                    t, @min(1.0, t+tstep),
-                    .{},
-                ) });
-                const p = catmull_rom.point(spline[i+0], spline[i+1], spline[i+2], spline[i+3], t, tensions[i]);
-                try samples.append(allocator, p);
-            }
-            assert(std.math.approxEqAbs(f32, t, 1.0, (tstep + std.math.floatEps(f32))));
-            carry = -rlen;
+            // std.debug.print("seg={d}, len={e}, required_len={e}, carry={e}\n", .{ i, len, required_len, carry });
         }
 
         const slice = try samples.toOwnedSlice(allocator);

@@ -11,6 +11,8 @@ const cache_line = std.atomic.cache_line;
 
 pub const ThreadPool = @import("stdx/ThreadPool.zig");
 pub const integrate = @import("stdx/integrate.zig");
+pub const StaticMultiArrayList = @import("stdx/static_multi_array_list.zig").StaticMultiArrayList;
+
 
 /// Thin wrapper around basic SIMD vector functionality to
 /// make it easier to work with enums and slices.
@@ -148,4 +150,8 @@ pub fn vectorLength(comptime VectorType: type) comptime_int {
         .array => |info| info.len,
         else => @compileError("Invalid type " ++ @typeName(VectorType)),
     };
+}
+
+test {
+    std.testing.refAllDeclsRecursive(@This());
 }

@@ -165,6 +165,9 @@ pub const Vec2D = extern struct {
         };
     }
 
+    pub inline fn eql(v: Vec2D, w: Vec2D) bool {
+        return (v.x == v.y and w.x == w.y);
+    }
     pub inline fn approxEqAbs(v: Vec2D, w: Vec2D, tolerance: f32) bool {
         return (math.approxEqAbs(f32, v.x, w.x, tolerance) and math.approxEqAbs(f32, v.y, w.y, tolerance));
     }
