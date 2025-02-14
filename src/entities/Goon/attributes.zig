@@ -120,30 +120,32 @@ pub const Immutable = extern struct {
             comptime templates: *const [enums.directEnumArrayLen(Kind, 0)]Immutable.Template,
             comptime lategame: bool,
         ) *const Immutable.List {
-            var resolved: Immutable.List = undefined;
-            for (0..templates.len) |i| {
-                const t = templates[i];
-                resolved[i] = if (lategame) .{
-                    .base_hp = t.base_hp,
-                    .base_speed = t.base_speed,
+            comptime {
+                var resolved: Immutable.List = undefined;
+                for (0..templates.len) |i| {
+                    const t = templates[i];
+                    resolved[i] = if (lategame) .{
+                        .base_hp = t.base_hp,
+                        .base_speed = t.base_speed,
 
-                    .child_count = t.child_count_lategame,
-                    .children = t.children_lategame,
-                    .rbe = t.rbe_lategame,
+                        .child_count = t.child_count_lategame,
+                        .children = t.children_lategame,
+                        .rbe = t.rbe_lategame,
 
-                    .extra = t.extra,
-                } else .{
-                    .base_hp = t.base_hp,
-                    .base_speed = t.base_speed,
+                        .extra = t.extra,
+                    } else .{
+                        .base_hp = t.base_hp,
+                        .base_speed = t.base_speed,
 
-                    .child_count = t.child_count,
-                    .children = t.children,
-                    .rbe = t.rbe,
+                        .child_count = t.child_count,
+                        .children = t.children,
+                        .rbe = t.rbe,
 
-                    .extra = t.extra,
-                };
+                        .extra = t.extra,
+                    };
+                }
+                return &resolved;
             }
-            return &resolved;
         }
     };
 
@@ -169,16 +171,17 @@ pub const Immutable = extern struct {
     }
 };
 
+
 pub const Mutable = struct {
-    position: Vec2D,
-    hp: f64,
+    t: f32,
+    hp: f32,
     speed: f32,
     kind: Kind,
     color: Color,
     extra: Extra,
 
 
-    pub const List = std.MultiArrayList(Mutable);
+    pub const List = stdx.StaticMultiArrayList(Mutable);
 
 
     pub const Color = enum(u8) {
@@ -201,7 +204,7 @@ pub const Mutable = struct {
     pub const AppliedEffect = extern struct {
         effect: *Effect,
         /// time elapsed since application in seconds
-        time_elapsed: f64,
+        time_elapsed: f32,
     };
 };
 
@@ -232,17 +235,17 @@ pub const Template = packed struct(u16) {
     pub inline fn resolve(
         template: Template,
         position: Vec2D,
-        hp_scaling: f64,
+        hp_scaling: f32,
         speed_scaling: f32,
     ) Mutable {
         const immutable = Goon.getImmutable(template.kind);
         const real_base_hp: f16 = if (template.extra.fortified)
-            immutable.base_hp * immutable.extra.fortified_factor
+            (immutable.base_hp * immutable.extra.fortified_factor)
         else
             immutable.base_hp;
         return Mutable{
             .position = position,
-            .hp = hp_scaling * @as(u64, @floatCast(real_base_hp)),
+            .hp = hp_scaling * @as(u32, @floatCast(real_base_hp)),
             .speed = speed_scaling * @as(u32, @floatCast(immutable.base_speed)),
             .kind = template.kind,
             .color = template.color,

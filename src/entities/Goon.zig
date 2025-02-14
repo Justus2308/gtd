@@ -9,10 +9,8 @@ const enums = std.enums;
 const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
-const simd = std.simd;
 
 const Allocator = mem.Allocator;
-const Vector = stdx.Vector;
 
 const assert = std.debug.assert;
 
@@ -55,35 +53,36 @@ pub const Kind = enum(u8) {
 
 
 pub const Block align(mem.page_size) = struct {
-    memory: [Block.size]u8 align(alignment) = undefined,
+    memory: [Goon.Block.mem_size]u8 align(Goon.Block.mem_align),
     mutable_list: Goon.Mutable.List,
     id_offset: u32,
-    is_free: BoolVec,
+    is_free: BitVec,
 
-    due_damage: F64Vec,
+    due_damage: F32Vec,
     due_pierce: U32Vec,
 
-    depends_on: DependencyMap,
-    provides: DependencyMap,
+    // depends_on: DependencyMap,
+    // provides: DependencyMap,
 
     pub const capacity = 512;
-    const size = Goon.Mutable.List.capacityInBytes(Block.capacity);
-    const alignment = @alignOf(Goon.Mutable);
+    const mem_size = Goon.Mutable.List.requiredByteSize(Goon.Block.capacity);
+    const mem_align = @alignOf(Goon.Mutable);
 
-    const F64Vec = Vector(Block.capacity, f64);
-    const U32Vec = Vector(Block.capacity, u32);
-    const BoolVec = @Vector(Block.capacity, bool);
+    const F32Vec = stdx.SimdVec(Block.capacity, f32);
+    const U32Vec = stdx.SimdVec(Block.capacity, u32);
+    const BitVec = stdx.SimdBitVec(Block.capacity);
 
-    pub const Attribute = Mutable.List.Field;
-    fn AttributeType(comptime attribute: Attribute) type {
-        return std.meta.fieldInfo(Goon.Mutable.Table, attribute).type;
-    }
+    pub const MutableField = Mutable.List.Field;
 
     pub const Dependency = enum(u32) {
-
+        comptime {
+            stdx.todo("implement");
+        }
     };
     pub const DependencyMap = packed struct(u32) {
-
+        comptime {
+            stdx.todo("implement");
+        }
     };
 
     pub fn create(pool: *Block.Pool, id_offset: u32) *Block {
@@ -91,14 +90,12 @@ pub const Block align(mem.page_size) = struct {
         defer pool.destroy(block);
 
         block.* = .{
-            .mutable_list = .{
-                .bytes = block.memory,
-                .len = 0,
-                .capacity = Block.capacity,
-            },
+            .memory = undefined,
+            .mutable_list = Goon.Mutable.List.init(&block.memory),
             .id_offset = id_offset,
-            .alive_map = Block.AliveMap.initEmpty(),
-            .due_damage = @splat(0.0),
+            .is_free = BitVec.splat(true),
+            .due_damage = F32Vec.splat(0.0),
+            .due_pierce = U32Vec.splat(0),
         };
     }
     pub fn destroy(block: *Block, pool: *Block.Pool) void {
@@ -113,32 +110,39 @@ pub const Block align(mem.page_size) = struct {
         return block.id_offset + Block.capacity;
     }
 
-    pub inline fn used(block: *Block) u32 {
-        return @intCast(block.mutable_list.len);
-    }
-
-    pub inline fn getAttr(
+    pub inline fn getField(
         block: *Block,
         goon: Goon,
-        comptime attribute: Attribute,
-    ) Block.AttributeType(attribute) {
-        return block.mutable_list.items(attribute)[goon.id - block.id_offset];
+        comptime field: MutableField,
+    ) @FieldType(Goon.Mutable, @tagName(field)) {
+        return block.mutable_list.items(field)[goon.id - block.id_offset];
     }
-    pub inline fn setAttr(
+    pub inline fn setField(
         block: *Block,
         goon: Goon,
-        comptime attribute: Attribute,
-        value: Block.AttributeType(attribute),
+        comptime field: MutableField,
+        value: @FieldType(Goon.Mutable, @tagName(field)),
     ) void {
-        block.mutable_list.items(attribute)[goon.id - block.id_offset] = value;
+        block.mutable_list.items(field)[goon.id - block.id_offset] = value;
     }
 
-    pub inline fn get(block: *Block, goon: Goon) Goon.Mutable {
+    pub inline fn get(block: Block, goon: Goon) Goon.Mutable {
         return block.mutable_list.get(goon.id - block.id_offset);
     }
     pub inline fn set(block: *Block, goon: Goon, mutable: Goon.Mutable) void {
         block.mutable_list.set(goon.id - block.id_offset, mutable);
     }
+
+    pub fn sort(block: *Block) void {
+        block.mutable_list.sortUnstable(SortCtx{ .t = block.mutable_list.items(.t) });
+    }
+    const SortCtx = struct {
+        t: []f32,
+
+        pub fn lessThan(ctx: SortCtx, a_index: usize, b_index: usize) bool {
+            return (ctx.t[a_index] < ctx.t[b_index]);
+        }
+    };
 
     pub fn spawn(block: *Block, mutable: Goon.Mutable) Goon {
         const local_id = block.mutable_list.addOneAssumeCapacity();
@@ -168,11 +172,11 @@ pub const Block align(mem.page_size) = struct {
         // TODO diagramm davon anfertigen simd is verwirrend alda
         // TODO ist hier alles nur mit simd möglich? -> als shader implementieren?
 
-        var hp_vec: F64Vec = undefined;
+        var hp_vec: F32Vec = undefined;
         @memcpy(&hp_vec, block.mutable_list.items(.hp));
 
         while (@reduce(.Add, block.due_damage) > 0.0) {
-            const all_zeroes: F64Vec = @splat(0.0);
+            const all_zeroes: F32Vec = @splat(0.0);
 
             const hp_remaining = (hp_vec - block.due_damage);
             const goon_is_dead = (hp_remaining > 0);
@@ -188,11 +192,11 @@ pub const Block align(mem.page_size) = struct {
                 break;
             }
 
-            const KindVec = Vector(Block.capacity, Kind);
+            const KindVec = stdx.simd.Vector(Block.capacity, Kind);
             const kinds = KindVec.fromSlice(block.mutable_list.items(.kind));
             // @memcpy(&kinds, @as(*const KindVec, @ptrCast(block.mutable_list.items(.kind))));
 
-            const ColorVec = Vector(Block.capacity, Mutable.Color);
+            const ColorVec = stdx.simd.Vector(Block.capacity, Mutable.Color);
             // decrement colors of normal goons
             const normal_only_pred = (kinds == KindVec.splat(.normal));
             const normal_only_decr = @select(
@@ -202,10 +206,10 @@ pub const Block align(mem.page_size) = struct {
                 ColorVec.splat(@enumFromInt(0)),
             );
             const dmg_decr = @select(
-                F64Vec.VectorElem,
+                F32Vec.VectorElem,
                 normal_only_pred,
-                F64Vec.splat(1.0),
-                F64Vec.splat(0.0),
+                F32Vec.splat(1.0),
+                F32Vec.splat(0.0),
             );
 
             // TODO implement .penetrates_large (Penetrates Blimp)
@@ -283,17 +287,17 @@ pub const Block align(mem.page_size) = struct {
         block.is_free[goon.id - block.id_offset] = true;
     }
     fn findNextFreeIdx(block: *const Block) ?u32 {
-        return simd.firstTrue(block);
+        return std.simd.firstTrue(block);
     }
 
-    pub inline fn isAlive(block: *Block, goon: Goon) bool {
+    pub inline fn isAlive(block: Block, goon: Goon) bool {
         return !block.is_free[goon.id - block.id_offset];
     }
-    pub fn hasAlive(block: *Block) bool {
+    pub inline fn hasAlive(block: Block) bool {
         return @reduce(.And, block.is_free);
     }
 
-    pub fn isFull(block: *Block) bool {
+    pub inline fn isFull(block: Block) bool {
         return !@reduce(.Or, block.is_free);
     }
 

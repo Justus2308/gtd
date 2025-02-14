@@ -54,6 +54,18 @@ pub const catmull_rom = struct {
         return dt_norm;
     }
 
+    pub fn estimateDiscretePointCount(spline: []const Vec2D, tensions: []const f32, sample_dist: f32) usize {
+        assert(sample_dist > 0.0);
+
+        var total_len: f32 = 0.0;
+        for (0..(spline.len -| 3)) |i| {
+            const len = catmull_rom.length(spline[i+0], spline[i+1], spline[i+2], spline[i+3], tensions[i]);
+            total_len += len;
+        }
+        const point_count_fp = total_len / sample_dist;
+        return @intFromFloat(point_count_fp);
+    }
+
     // TODO lerp pass to guarantee exact distances if necessary
     pub fn discretize(
         allocator: Allocator,

@@ -45,6 +45,25 @@ pub const Path = struct {
     }
 
     pub fn discretize(path: Path, allocator: Allocator, granularity: f32) Allocator.Error![][]Vec2D {
+        const subpath_point_count_safety_margin = 8;
+
+        var total_point_size: usize = 0;
+        var subpath_sizes_buffer: [Path.max_subpath_count]usize = undefined;
+        const subpath_sizes = subpath_sizes_buffer[0..path.subpaths.len];
+        for (path.subpaths, subpath_sizes) |subpath, *size| {
+            const point_count = geo.splines.catmull_rom.estimateDiscretePointCount(
+                subpath.items(.start),
+                subpath.items(.tension),
+                granularity,
+            ) + subpath_point_count_safety_margin;
+            const point_size = (point_count * @sizeOf(Vec2D));
+            // Every subpath should be cache line aligned to avoid false sharing
+            // when processing subpaths in parallel.
+            const point_size_aligned = mem.alignForward(usize, point_size, std.atomic.cache_line);
+            total_point_size += point_size_aligned;
+            size.* = point_size_aligned;
+        }
+
         const discretized = try allocator.alloc([]Vec2D, path.subpaths.len);
         errdefer allocator.free(discretized);
 
@@ -264,24 +283,21 @@ pub const Path = struct {
 
             const subpath_size = (subpath_count * @sizeOf(Path.Subpath));
             const subpath_size_aligned = mem.alignForward(usize, subpath_size, @alignOf(Path.Segment));
-            const size = subpath_size_aligned + subpath_buffer_size;
+            const raw_size = subpath_size_aligned + subpath_buffer_size;
 
-            const raw = try allocator.alignedAlloc(u8, Path.mem_align, size);
+            const raw = try allocator.alignedAlloc(u8, Path.mem_align, raw_size);
             errdefer allocator.free(raw);
 
-            var subpaths = @as([*]Path.Subpath, @ptrCast(@alignCast(raw.ptr)))[0..subpath_count];
+            const subpaths = @as([*]Path.Subpath, @ptrCast(@alignCast(raw.ptr)))[0..subpath_count];
+            var buffer_memory = std.heap.FixedBufferAllocator.init(raw[subpath_size_aligned..raw.len]);
+            const buffer_allocator = buffer_memory.allocator();
 
             var subpath_idx: usize = 0;
-            var raw_idx: usize = subpath_size_aligned;
             for (&b.segment_lists) |*list| {
                 const count = list.inner.len;
                 if (count > 2) {
                     const required = Path.Subpath.requiredByteSize(count);
-                    const buffer: []align(@alignOf(Path.Segment)) u8 = @alignCast(raw[raw_idx..][0..required]);
-                    raw_idx += mem.alignForward(usize, required, @alignOf(Path.Segment));
-
-                    std.debug.assertReadable(buffer);
-
+                    const buffer = buffer_allocator.alignedAlloc(u8, @alignOf(Path.Segment), required) catch unreachable;
                     subpaths[subpath_idx] = Path.Subpath.init(buffer);
                     defer subpath_idx += 1;
 
@@ -299,7 +315,7 @@ pub const Path = struct {
                     assert(i == count);
                 }
             }
-            assert(raw_idx == size);
+            assert(buffer_memory.end_index == buffer_memory.buffer.len);
 
             const path = Path{
                 .subpaths = @ptrCast(subpaths),
