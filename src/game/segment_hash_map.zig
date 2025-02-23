@@ -141,7 +141,7 @@ pub fn SegmentHashMap(
 
         const BitSet = std.bit_set.StaticBitSet(total_seg_count);
 
-        const Builder = struct {
+        const Builder = struct { // TODO rewrite without builder
             allocator: Allocator,
             can_collide: [total_seg_count]std.bit_set.DynamicBitSetUnmanaged,
             interval_lists: [total_seg_count]Segment.Interval.List,

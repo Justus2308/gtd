@@ -23,9 +23,13 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .raylib = .{
-            .url = "https://github.com/raysan5/raylib/archive/master.tar.gz",
-            .hash = "1220af2aa71cc9a2384244e027f7dea21f30a14943eeefc821f406eb0da35e2ae4e8",
+        .sokol = .{
+            .url = "https://github.com/floooh/sokol-zig/archive/master.tar.gz",
+            .hash = "1220072a0988c8ce53680094a04a6513cce6854d8f838a2a17d34bf9176da73023a2",
+        },
+        .sqlite = .{
+            .url = "https://github.com/vrischmann/zig-sqlite/archive/master.tar.gz",
+            .hash = "1220d7bd38dfca49f4485e8d1c376dbf7a70620e2fd029a11621ed9b5be27534302a",
         },
     },
     .paths = .{

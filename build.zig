@@ -4,12 +4,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const raylib_mod = b.dependency("raylib", .{
+    const sokol_dep = b.dependency("sokol", .{
         .target = target,
         .optimize = optimize,
-        .rmodels = false,
-        .shared = false,
-    }).module("raylib");
+    });
+    const sqlite_dep = b.dependency("sqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     const imports = [_]std.Build.Module.Import{
         createImport(b, "entities", optimize, target),
@@ -25,18 +27,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &imports,
     });
-    exe_mod.addImport("raylib", raylib_mod);
+    exe_mod.addImport("sokol", sokol_dep.module("sokol"));
+    exe_mod.addImport("sqlite", sqlite_dep.module("sqlite"));
 
     const exe = b.addExecutable(.{
         .name = "gtd",
         .root_module = exe_mod,
     });
-
-    // exe.linkLibrary(raylib_artifact);
-    // exe.linkLibrary(sdl_artifact);
-
-    // exe.root_module.addImport("raylib", raylib_mod);
-    // exe.root_module.addImport("raygui", raygui_mod);
 
     b.installArtifact(exe);
 
