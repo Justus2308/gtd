@@ -164,7 +164,7 @@ pub const Vec2D = extern struct {
             .y = v.y + w.y,
         };
     }
-    pub inline fn addS(v: Vec2D, s: f32) Vec2D {
+    pub inline fn addScalar(v: Vec2D, s: f32) Vec2D {
         return .{
             .x = v.x + s,
             .y = v.y + s,
@@ -177,7 +177,7 @@ pub const Vec2D = extern struct {
             .y = v.y - w.y,
         };
     }
-    pub inline fn subS(v: Vec2D, s: f32) Vec2D {
+    pub inline fn subScalar(v: Vec2D, s: f32) Vec2D {
         return .{
             .x = v.x - s,
             .y = v.y - s,
@@ -292,8 +292,4 @@ pub const Vec2D = extern struct {
     pub inline fn approxEqRel(v: Vec2D, w: Vec2D, tolerance: f32) bool {
         return (math.approxEqRel(f32, v.x, w.x, tolerance) and math.approxEqRel(f32, v.y, w.y, tolerance));
     }
-
-    // pub inline fn asRaylib(v: Vec2D) raylib.Vector2 {
-    //     return @bitCast(v);
-    // }
 };

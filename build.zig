@@ -1,7 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const sokol = @import("sokol");
 
 const ShaderLanguage = enum {
+    auto,
     glsl410,
     glsl430,
     glsl300es,
@@ -17,22 +19,23 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const shader_lang_opt = b.option(ShaderLanguage, "slang", "Use a custom shader language if possible") orelse .auto;
+    const sokol_backend_hint: sokol.SokolBackend = switch (shader_lang_opt) {
+        .glsl410, .glsl430 => .gl,
+        .glsl300es => .gles3,
+        .wgsl => .wgpu,
+        else => .auto,
+    };
+
     const sokol_dep = b.dependency("sokol", .{
         .target = target,
         .optimize = optimize,
 
-        // ensure `sokol_backend = .auto`
-        .gl = false,
-        .gles3 = false,
-        .wgpu = false,
+        .gl = (sokol_backend_hint == .gl),
+        .gles3 = (sokol_backend_hint == .gles3),
+        .wgpu = (sokol_backend_hint == .wgpu),
     });
     const sokol_mod = sokol_dep.module("sokol");
-
-    // const sokol_tools_dep = b.dependency("sokol_tools", .{
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
-    // const sokol_shdc_exe = sokol_tools_dep.artifact("sokol-shdc");
 
     const sokol_tools_bin_dep = b.dependency("sokol_tools_bin", .{});
     const sokol_shdc_bin_subpath = "bin/" ++ switch (builtin.os.tag) {
@@ -47,48 +50,54 @@ pub fn build(b: *std.Build) void {
     } ++ "/sokol-shdc" ++ if (builtin.os.tag == .windows) ".exe" else "";
     const sokol_shdc_bin_path = sokol_tools_bin_dep.path(sokol_shdc_bin_subpath);
 
-    // const shader_lang: ShaderLanguage =
-    //     b.option(ShaderLanguage, "slang", "Choose a custom shader language/GPU API") orelse
-    //     if (target.result.cpu.arch.isWasm())
-    //         .glsl300es
-    //     else switch (target.result.os.tag) {
-    //         .macos => .metal_macos,
-    //         .ios => .metal_ios,
-    //         .windows => .hlsl5,
-    //         else => .glsl430, // TODO ???
-    //     };
-    const sokol_backend = @import("sokol").resolveSokolBackend(.auto, target.result);
+    const sokol_backend = sokol.resolveSokolBackend(sokol_backend_hint, target.result);
     const shader_lang: ShaderLanguage = switch (sokol_backend) {
-        .auto => unreachable,
-        .metal => if (target.result.os.tag == .macos) .metal_macos else .metal_ios,
-        .d3d11 => .hlsl5,
+        .metal => switch (shader_lang_opt) {
+            .metal_macos, .metal_ios, .metal_sim => |lang| lang,
+            else => if (target.result.os.tag == .macos) .metal_macos else .metal_ios,
+        },
+        .d3d11 => switch (shader_lang_opt) {
+            .hlsl4, .hlsl5 => |lang| lang,
+            else => .hlsl5,
+        },
         .gles3 => .glsl300es,
-        else => .glsl430,
+        .wgpu => .wgsl,
+        .gl => switch (shader_lang_opt) {
+            .glsl410, .glsl430 => |lang| lang,
+            else => .glsl430,
+        },
+        else => unreachable,
     };
 
-    // const sokol_shdc_step = b.addRunArtifact(sokol_shdc_exe);
-    const sokol_shdc_step = std.Build.Step.Run.create(b, "run sokol shdc");
+    const sokol_shdc_step = std.Build.Step.Run.create(b, "run sokol-shdc");
     sokol_shdc_step.addFileArg(sokol_shdc_bin_path);
     sokol_shdc_step.addPrefixedFileArg("--input=", b.path("src/render/shader.glsl"));
     const sokol_shdc_out = sokol_shdc_step.addPrefixedOutputFileArg("--output=", "shader.zig");
     sokol_shdc_step.addArgs(&.{ b.fmt("--slang={s}", .{@tagName(shader_lang)}), "--format=sokol_zig" });
 
-    const imports = [_]std.Build.Module.Import{
+    const internal_imports = [_]std.Build.Module.Import{
         createImport(b, "entities", optimize, target),
         createImport(b, "game", optimize, target),
         createImport(b, "stdx", optimize, target),
         createImport(b, "geo", optimize, target),
     };
-    addImportTests(b, &imports);
+    addImportTests(b, &internal_imports);
+
+    const shader_mod = b.createModule(.{
+        .root_source_file = sokol_shdc_out,
+        .optimize = optimize,
+        .target = target,
+    });
+    shader_mod.addImport("sokol", sokol_mod);
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .optimize = optimize,
         .target = target,
-        .imports = &imports,
+        .imports = &internal_imports,
     });
     exe_mod.addImport("sokol", sokol_mod);
-    exe_mod.addAnonymousImport("shader", .{ .root_source_file = sokol_shdc_out });
+    exe_mod.addImport("shader", shader_mod);
 
     const exe = b.addExecutable(.{
         .name = "gtd",
@@ -112,7 +121,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &imports,
+        .imports = &internal_imports,
     });
     exe_unit_tests_mod.addImport("sokol", sokol_mod);
 

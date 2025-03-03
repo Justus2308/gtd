@@ -1,5 +1,6 @@
 const std = @import("std");
 const geo = @import("geo");
+const shader = @import("shader");
 const sokol = @import("sokol");
 const gfx = sokol.gfx;
 

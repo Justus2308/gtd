@@ -1,7 +1,9 @@
 @ctype vec2 Vec2D
 
 @vs vs
-layout(binding=0) uniform vs_params {
-    
-};
+in vec2 position;
+out vec2 uv;
+
+void main() {}
+@end
 

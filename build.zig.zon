@@ -9,10 +9,6 @@
             .url = "https://github.com/floooh/sokol-zig/archive/master.tar.gz",
             .hash = "sokol-0.1.0-pb1HK5NgNgDWuuAB-CpH2rAjRKIcuONrrFVDmyJaW4Ly",
         },
-        // .sokol_tools = .{
-        //     .url = "https://github.com/floooh/sokol-tools/archive/master.tar.gz",
-        //     .hash = "N-V-__8AAGYgEgDuntf2Rlep-D2MYMR0BAthKvT3OCA1VaCC",
-        // },
         .sokol_tools_bin = .{
             .url = "https://github.com/floooh/sokol-tools-bin/archive/master.tar.gz",
             .hash = "N-V-__8AAPiO9QNzW747-YsdWwiiBaNLStW1ar0uVCgmxS4D",
