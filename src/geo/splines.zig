@@ -63,10 +63,12 @@ pub const catmull_rom = struct {
             total_len += len;
         }
         const point_count_fp = total_len / sample_dist;
-        return @intFromFloat(point_count_fp);
+        var point_count: usize = @intFromFloat(point_count_fp);
+        point_count += @max(1, (point_count >> 10));
+        return point_count;
     }
 
-    // TODO lerp pass to guarantee exact distances if necessary
+    // TODO lerp pass to smooth out inaccuracies caused by unsteady curves at segment transition points?
     pub fn discretize(
         allocator: Allocator,
         spline: []const Vec2D,
@@ -93,22 +95,10 @@ pub const catmull_rom = struct {
             }
 
             const linear_t_step = (sample_dist / len);
+            const t_offset = (carry / len);
 
-            const toff: f32 = blk: {
-                // estimate t offset based on carried-over length and total length of curve
-                if (carry == 0.0) {
-                    @branchHint(.cold);
-                    break :blk 0.0;
-                }
-                const rough = (carry / len);
-                const rough_len = catmull_rom.lengthAt(spline[i + 0], spline[i + 1], spline[i + 2], spline[i + 3], rough, tensions[i]);
-                const estimate = 0.5 * (rough + (rough_len / carry));
-                // std.debug.print("carry={e}, rough={e}, rough_len={e}, estimate={e}\n", .{ carry, rough, rough_len, estimate });
-                break :blk estimate;
-            };
-
-            var t_prev: f32 = 0.0;
-            var t: f32 = toff;
+            var t = t_offset;
+            var t_prev = (t - linear_t_step);
             var required_len = carry;
             while (true) : ({
                 // estimate next t based on previous t and total length of curve
@@ -117,20 +107,23 @@ pub const catmull_rom = struct {
                 t += t_step;
                 required_len += sample_dist;
             }) {
+                // Newton-Rhapson Method
                 for (0..max_approx_steps) |_| {
-                    // Newton-Rhapson Method
                     const nom = required_len - catmull_rom.lengthAt(spline[i + 0], spline[i + 1], spline[i + 2], spline[i + 3], t, tensions[i]);
                     const denom = -1.0 * catmull_rom.integrandLength(t, spline[i + 0], spline[i + 1], spline[i + 2], spline[i + 3], tensions[i]);
                     const quot = (nom / denom);
                     t -= quot;
-                    if (quot < eps) {
+                    if (@abs(quot) < eps) {
                         @branchHint(.unlikely);
                         break;
                     }
+                } else {
+                    @branchHint(.cold);
+                    std.debug.print("discretize: newton method reached max approx steps! (seg:{d}, idx:{d})\n", .{ i, samples.items.len }); // TODO replace with proper log
                 }
 
                 if (t > 1.0) {
-                    required_len += sample_dist; // ??
+                    @branchHint(.unlikely);
                     break;
                 }
 
@@ -142,7 +135,7 @@ pub const catmull_rom = struct {
                 try samples.append(allocator, p);
             }
             carry = @rem((required_len - len), sample_dist);
-            // std.debug.print("seg={d}, len={e}, required_len={e}, carry={e}\n", .{ i, len, required_len, carry });
+            // std.debug.print("seg={d}, idx={d}, len={d}, required_len={d}, carry={d}\n", .{ i, samples.items.len -| 1, len, required_len, carry });
         }
 
         const slice = try samples.toOwnedSlice(allocator);

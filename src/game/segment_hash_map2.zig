@@ -61,13 +61,14 @@ pub const Window = struct {
 
         for (path, 0..) |p, i| {
             // 'draw' circle, https://stackoverflow.com/a/58629898/20378526
-            var d: Vec2D = undefined;
             var angle: f32 = 0.0;
             while (angle <= 360.0) : (angle += min_angle) {
-                d.x = max_entity_radius * @cos(angle);
-                d.y = max_entity_radius * @sin(angle);
-                const hashed = self.hash(d.add(p));
-                active_segments.set(hashed);
+                const q = Vec2D{
+                    .x = max_entity_radius * @cos(angle),
+                    .y = max_entity_radius * @sin(angle),
+                };
+                const seg = self.hash(p.add(q));
+                event_starts[seg] = i;
             }
 
             // 'fill' circle and register identified segments
@@ -82,6 +83,7 @@ pub const Window = struct {
                 if (curr_hseg == hseg) {
                     for (curr..(next + 1)) |seg| {
                         b.can_collide[seg].set(i);
+                        event_starts[seg] = 
                     }
                 } else {
                     b.can_collide[curr].set(i);

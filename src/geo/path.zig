@@ -10,10 +10,8 @@ const Vec2D = geo.points.Vec2D;
 
 const assert = std.debug.assert;
 
-
 pub const Path = struct {
     subpaths: []const Subpath,
-
 
     const Subpath = stdx.StaticMultiArrayList(Path.Segment);
 
@@ -21,7 +19,6 @@ pub const Path = struct {
     pub const max_segment_count = 64;
 
     const mem_align = @alignOf(*anyopaque);
-
 
     pub inline fn build(allocator: Allocator) Allocator.Error!Path.Builder {
         return Path.Builder.init(allocator);
@@ -45,46 +42,37 @@ pub const Path = struct {
     }
 
     pub fn discretize(path: Path, allocator: Allocator, granularity: f32) Allocator.Error![][]Vec2D {
-        const subpath_point_count_safety_margin = 8;
-
-        var total_point_size: usize = 0;
-        var subpath_sizes_buffer: [Path.max_subpath_count]usize = undefined;
-        const subpath_sizes = subpath_sizes_buffer[0..path.subpaths.len];
-        for (path.subpaths, subpath_sizes) |subpath, *size| {
+        var total_size = mem.alignForward(usize, (path.subpaths.len * @sizeOf([]Vec2D)), @alignOf(Vec2D));
+        for (path.subpaths) |subpath| {
             const point_count = geo.splines.catmull_rom.estimateDiscretePointCount(
                 subpath.items(.start),
                 subpath.items(.tension),
                 granularity,
-            ) + subpath_point_count_safety_margin;
-            const point_size = (point_count * @sizeOf(Vec2D));
-            // Every subpath should be cache line aligned to avoid false sharing
-            // when processing subpaths in parallel.
-            const point_size_aligned = mem.alignForward(usize, point_size, std.atomic.cache_line);
-            total_point_size += point_size_aligned;
-            size.* = point_size_aligned;
+            );
+            const size = (point_count * @sizeOf(Vec2D));
+            total_size += size;
         }
 
-        const discretized = try allocator.alloc([]Vec2D, path.subpaths.len);
-        errdefer allocator.free(discretized);
+        const buffer = try allocator.alignedAlloc(u8, @alignOf([]Vec2D), total_size);
+        errdefer allocator.free(buffer);
+
+        var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer);
+        const bufalloc = buffer_allocator.allocator();
+
+        const discretized = try bufalloc.alloc([]Vec2D, path.subpaths.len);
 
         for (path.subpaths, discretized) |subpath, *disc| {
-            errdefer {
-                const end = @intFromPtr(disc) - @intFromPtr(&discretized[0]);
-                for (discretized[0..end]) |d| {
-                    allocator.free(d);
-                }
-            }
             disc.* = try geo.splines.catmull_rom.discretize(
-                allocator,
+                bufalloc,
                 subpath.items(.start),
                 subpath.items(.tension),
                 granularity,
             );
         }
-        errdefer for (discretized) |d| {
-            allocator.free(d);
-        };
-        // TODO transform into more cache-friendly mem layout
+
+        const used_size = buffer_allocator.end_index;
+        _ = allocator.resize(buffer, used_size);
+
         return discretized;
     }
 
@@ -130,10 +118,8 @@ pub const Path = struct {
         segment_lists: [Path.max_subpath_count]Path.Segment.List,
         segment_count: usize,
 
-
         const SegmentNode = Path.Segment.List.Inner.Node;
         const Pool = std.heap.MemoryPool(SegmentNode);
-
 
         pub fn init(allocator: Allocator) Allocator.Error!Path.Builder {
             var b: Path.Builder = undefined;
@@ -147,26 +133,22 @@ pub const Path = struct {
                 };
 
                 const first = try b.pool.create();
-                first.* = .{
-                    .data = .{
-                        .segment = .{
-                            .start = Vec2D.zero,
-                            .tension = 0.0,
-                        },
-                        .list_id = @intCast(id),
+                first.data = .{
+                    .segment = .{
+                        .start = Vec2D.zero,
+                        .tension = 0.0,
                     },
+                    .list_id = @intCast(id),
                 };
                 list.inner.prepend(first);
 
                 const last = try b.pool.create();
-                last.* = .{
-                    .data = .{
-                        .segment = .{
-                            .start = Vec2D.zero,
-                            .tension = 0.0,
-                        },
-                        .list_id = @intCast(id),
+                last.data = .{
+                    .segment = .{
+                        .start = Vec2D.zero,
+                        .tension = 0.0,
                     },
+                    .list_id = @intCast(id),
                 };
                 list.inner.append(last);
             }
@@ -190,15 +172,13 @@ pub const Path = struct {
                 const slc = subpath.slice();
                 for (0..slc.len) |i| {
                     const node = try b.pool.create();
-                    node.* = .{
-                        .data = .{
-                            .segment = slc.get(i),
-                            .list_id = @intCast(id),
-                        },
+                    node.data = .{
+                        .segment = slc.get(i),
+                        .list_id = @intCast(id),
                     };
                     b.segment_lists[id].inner.append(node);
                 }
-                b.segment_count += (subpath.len-2);
+                b.segment_count += (subpath.len - 2);
             }
 
             for (path.subpaths.len..Path.max_subpath_count) |id| {
@@ -209,26 +189,22 @@ pub const Path = struct {
                 };
 
                 const first = try b.pool.create();
-                first.* = .{
-                    .data = .{
-                        .segment = .{
-                            .start = Vec2D.zero,
-                            .tension = 0.0,
-                        },
-                        .list_id = @intCast(id),
+                first.data = .{
+                    .segment = .{
+                        .start = Vec2D.zero,
+                        .tension = 0.0,
                     },
+                    .list_id = @intCast(id),
                 };
                 list.inner.prepend(first);
 
                 const last = try b.pool.create();
-                last.* = .{
-                    .data = .{
-                        .segment = .{
-                            .start = Vec2D.zero,
-                            .tension = 0.0,
-                        },
-                        .list_id = @intCast(id),
+                last.data = .{
+                    .segment = .{
+                        .start = Vec2D.zero,
+                        .tension = 0.0,
                     },
+                    .list_id = @intCast(id),
                 };
                 list.inner.append(last);
             }
@@ -419,13 +395,12 @@ pub const Path = struct {
         fn countSegments(b: *const Path.Builder) usize {
             var count: usize = 0;
             for (&b.segment_lists) |*list| {
-                count += (list.inner.len-2);
+                count += (list.inner.len - 2);
             }
             return count;
         }
     };
 };
-
 
 test "build Path" {
     const allocator = testing.allocator;

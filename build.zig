@@ -1,4 +1,17 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+const ShaderLanguage = enum {
+    glsl410,
+    glsl430,
+    glsl300es,
+    hlsl4,
+    hlsl5,
+    metal_macos,
+    metal_ios,
+    metal_sim,
+    wgsl,
+};
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -7,11 +20,58 @@ pub fn build(b: *std.Build) void {
     const sokol_dep = b.dependency("sokol", .{
         .target = target,
         .optimize = optimize,
+
+        // ensure `sokol_backend = .auto`
+        .gl = false,
+        .gles3 = false,
+        .wgpu = false,
     });
-    const sqlite_dep = b.dependency("sqlite", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    const sokol_mod = sokol_dep.module("sokol");
+
+    // const sokol_tools_dep = b.dependency("sokol_tools", .{
+    //     .target = target,
+    //     .optimize = optimize,
+    // });
+    // const sokol_shdc_exe = sokol_tools_dep.artifact("sokol-shdc");
+
+    const sokol_tools_bin_dep = b.dependency("sokol_tools_bin", .{});
+    const sokol_shdc_bin_subpath = "bin/" ++ switch (builtin.os.tag) {
+        .linux => "linux",
+        .macos => "osx",
+        .windows => "win32",
+        else => @compileError("unsupported host OS"),
+    } ++ switch (builtin.cpu.arch) {
+        .x86_64 => "",
+        .aarch64 => if (builtin.os.tag == .windows) @compileError("unsupported host arch") else "_arm64",
+        else => @compileError("unsupported host arch"),
+    } ++ "/sokol-shdc" ++ if (builtin.os.tag == .windows) ".exe" else "";
+    const sokol_shdc_bin_path = sokol_tools_bin_dep.path(sokol_shdc_bin_subpath);
+
+    // const shader_lang: ShaderLanguage =
+    //     b.option(ShaderLanguage, "slang", "Choose a custom shader language/GPU API") orelse
+    //     if (target.result.cpu.arch.isWasm())
+    //         .glsl300es
+    //     else switch (target.result.os.tag) {
+    //         .macos => .metal_macos,
+    //         .ios => .metal_ios,
+    //         .windows => .hlsl5,
+    //         else => .glsl430, // TODO ???
+    //     };
+    const sokol_backend = @import("sokol").resolveSokolBackend(.auto, target.result);
+    const shader_lang: ShaderLanguage = switch (sokol_backend) {
+        .auto => unreachable,
+        .metal => if (target.result.os.tag == .macos) .metal_macos else .metal_ios,
+        .d3d11 => .hlsl5,
+        .gles3 => .glsl300es,
+        else => .glsl430,
+    };
+
+    // const sokol_shdc_step = b.addRunArtifact(sokol_shdc_exe);
+    const sokol_shdc_step = std.Build.Step.Run.create(b, "run sokol shdc");
+    sokol_shdc_step.addFileArg(sokol_shdc_bin_path);
+    sokol_shdc_step.addPrefixedFileArg("--input=", b.path("src/render/shader.glsl"));
+    const sokol_shdc_out = sokol_shdc_step.addPrefixedOutputFileArg("--output=", "shader.zig");
+    sokol_shdc_step.addArgs(&.{ b.fmt("--slang={s}", .{@tagName(shader_lang)}), "--format=sokol_zig" });
 
     const imports = [_]std.Build.Module.Import{
         createImport(b, "entities", optimize, target),
@@ -27,8 +87,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &imports,
     });
-    exe_mod.addImport("sokol", sokol_dep.module("sokol"));
-    exe_mod.addImport("sqlite", sqlite_dep.module("sqlite"));
+    exe_mod.addImport("sokol", sokol_mod);
+    exe_mod.addAnonymousImport("shader", .{ .root_source_file = sokol_shdc_out });
 
     const exe = b.addExecutable(.{
         .name = "gtd",
@@ -36,6 +96,7 @@ pub fn build(b: *std.Build) void {
     });
 
     b.installArtifact(exe);
+    b.getInstallStep().dependOn(&sokol_shdc_step.step);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -53,11 +114,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &imports,
     });
+    exe_unit_tests_mod.addImport("sokol", sokol_mod);
+
     const exe_unit_tests = b.addTest(.{
         .root_module = exe_unit_tests_mod,
     });
-
-    // exe_unit_tests.linkLibrary(sdl_artifact);
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
