@@ -1,4 +1,6 @@
+const builtin = @import("builtin");
 const std = @import("std");
+const game = @import("game");
 const sokol = @import("sokol");
 const gfx = sokol.gfx;
 const glue = sokol.glue;
@@ -7,22 +9,31 @@ const mem = std.mem;
 
 const Allocator = mem.Allocator;
 
+const assert = std.debug.assert;
 const panic = std.debug.panic;
 const sokol_log = sokol.log.func;
 
+const MainState = struct {
+    timer: std.time.Timer,
+    game_state: game.State,
+    render_state: @import("render.zig").AppState,
+};
+
 pub fn main() !void {
-    var gpa = generalPurposeAllocator();
-    const allocator = gpa.allocator;
+    const allocator = Gpa.allocator_instance;
+    defer Gpa.deinit();
+
+    _ = allocator;
 }
 
 pub const Gpa = struct {
     ctx: Context,
     allocator: Allocator,
 
-    pub const Context = if (std.debug.runtime_safety) std.heap.DebugAllocator(.{}) else void;
-};
-pub fn generalPurposeAllocator() Gpa {
-    const gpa: Gpa = if (std.debug.runtime_safety) blk: {
+    external_allocs: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+    external_mutex: std.Thread.Mutex = .{},
+
+    var global: Gpa = if (Gpa.is_debug) blk: {
         const ctx = std.heap.DebugAllocator(.{}){};
         break :blk .{
             .ctx = ctx,
@@ -32,8 +43,90 @@ pub fn generalPurposeAllocator() Gpa {
         .ctx = {},
         .allocator = std.heap.smp_allocator,
     };
-    return gpa;
-}
+
+    var deinit_once = std.once(Gpa.deinitImpl);
+
+    pub const allocator_instance = Gpa.global.allocator;
+
+    const external_alignment = @divExact(builtin.target.ptrBitWidth(), 4);
+    const is_debug = (builtin.mode == .Debug);
+
+    pub const Context = if (Gpa.is_debug) std.heap.DebugAllocator(.{}) else void;
+
+    pub fn deinit() void {
+        Gpa.deinit_once.call();
+    }
+    fn deinitImpl() void {
+        Gpa.global.external_mutex.lock();
+        defer Gpa.global.external_mutex.unlock();
+        if (Gpa.is_debug) {
+            assert(Gpa.global.ctx.deinit() == .ok);
+        }
+        assert(Gpa.global.external_allocs.size == 0);
+    }
+
+    pub fn externalAlloc(size: usize) callconv(.c) ?*anyopaque {
+        const ptr = Gpa.global.allocator.rawAlloc(size, Gpa.external_alignment, @returnAddress());
+        if (ptr) |p| {
+            @branchHint(.likely);
+            const addr = @intFromPtr(p);
+            Gpa.global.external_mutex.lock();
+            defer Gpa.global.external_mutex.unlock();
+            Gpa.global.external_allocs.putNoClobber(Gpa.global.allocator, addr, size) catch {
+                @branchHint(.cold);
+                Gpa.global.allocator.rawFree(p[0..size], Gpa.external_alignment, @returnAddress());
+                return null;
+            };
+        }
+        return @ptrCast(ptr);
+    }
+    pub fn externalRealloc(ptr: ?*anyopaque, new_size: usize) callconv(.c) ?*anyopaque {
+        if (ptr) |p| {
+            @branchHint(.likely);
+            const addr = @intFromPtr(p);
+            Gpa.global.external_mutex.lock();
+            defer global.external_mutex.unlock();
+            const size = Gpa.global.external_allocs.get(addr) orelse @panic("unregistered allocation");
+            const new_ptr = if (Gpa.global.allocator.rawResize(p[0..size], Gpa.external_alignment, new_size, @returnAddress()))
+                ptr
+            else blk: {
+                const remapped = Gpa.global.allocator.rawAlloc(size, Gpa.external_alignment, new_size, @returnAddress());
+                if (remapped) |r| {
+                    @branchHint(.likely);
+                    const ok = Gpa.global.external_allocs.remove(addr);
+                    if (!ok) {
+                        @branchHint(.cold);
+                        @panic("unreachable but unrecoverable");
+                    }
+                    const new_addr = @intFromPtr(r);
+                    Gpa.global.external_allocs.putNoClobber(Gpa.global.allocator, new_addr, new_size) catch {
+                        @branchHint(.cold);
+                        Gpa.global.allocator.rawFree(r[0..new_size], Gpa.external_alignment, @returnAddress());
+                        return null;
+                    };
+                    const copy_size = @min(size, new_size);
+                    @memcpy(r[0..copy_size], p[0..copy_size]);
+                    Gpa.global.allocator.rawFree(p[0..size], Gpa.external_alignment, @returnAddress());
+                }
+                break :blk remapped;
+            };
+            return new_ptr;
+        } else {
+            @branchHint(.unlikely);
+            return Gpa.externalAlloc(new_size);
+        }
+    }
+    pub fn externalFree(ptr: ?*anyopaque) callconv(.c) void {
+        if (ptr) |p| {
+            @branchHint(.likely);
+            const addr = @intFromPtr(p);
+            Gpa.global.external_mutex.lock();
+            defer Gpa.global.external_mutex.unlock();
+            const size_entry = Gpa.global.external_allocs.fetchRemove(addr) orelse @panic("unregistered allocation");
+            Gpa.global.allocator.rawFree(p[0..size_entry.value], Gpa.external_alignment, @returnAddress());
+        }
+    }
+};
 
 // pub fn mainSDL() !void {
 //     // Init SDL

@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const sokol = @import("sokol");
+const sokol_bld = @import("sokol");
 
 const ShaderLanguage = enum {
     auto,
@@ -16,17 +16,19 @@ const ShaderLanguage = enum {
 };
 
 pub fn build(b: *std.Build) void {
+    // Resolve compilation options
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const shader_lang_opt = b.option(ShaderLanguage, "slang", "Use a custom shader language if possible") orelse .auto;
-    const sokol_backend_hint: sokol.SokolBackend = switch (shader_lang_opt) {
+    const shader_lang_hint = b.option(ShaderLanguage, "slang", "Use a custom shader language if possible") orelse .auto;
+    const sokol_backend_hint: sokol_bld.SokolBackend = switch (shader_lang_hint) {
         .glsl410, .glsl430 => .gl,
         .glsl300es => .gles3,
-        .wgsl => .wgpu,
+        .wgsl => if (sokol_bld.isPlatform(target.result, .web)) .wgpu else .auto,
         else => .auto,
     };
 
+    // Configure dependencies
     const sokol_dep = b.dependency("sokol", .{
         .target = target,
         .optimize = optimize,
@@ -50,21 +52,22 @@ pub fn build(b: *std.Build) void {
     } ++ "/sokol-shdc" ++ if (builtin.os.tag == .windows) ".exe" else "";
     const sokol_shdc_bin_path = sokol_tools_bin_dep.path(sokol_shdc_bin_subpath);
 
-    const sokol_backend = sokol.resolveSokolBackend(sokol_backend_hint, target.result);
+    // Compile shader
+    const sokol_backend = sokol_bld.resolveSokolBackend(sokol_backend_hint, target.result);
     const shader_lang: ShaderLanguage = switch (sokol_backend) {
-        .metal => switch (shader_lang_opt) {
+        .metal => switch (shader_lang_hint) {
             .metal_macos, .metal_ios, .metal_sim => |lang| lang,
             else => if (target.result.os.tag == .macos) .metal_macos else .metal_ios,
         },
-        .d3d11 => switch (shader_lang_opt) {
+        .d3d11 => switch (shader_lang_hint) {
             .hlsl4, .hlsl5 => |lang| lang,
             else => .hlsl5,
         },
         .gles3 => .glsl300es,
         .wgpu => .wgsl,
-        .gl => switch (shader_lang_opt) {
+        .gl => switch (shader_lang_hint) {
             .glsl410, .glsl430 => |lang| lang,
-            else => .glsl430,
+            else => .glsl410,
         },
         else => unreachable,
     };
@@ -75,6 +78,7 @@ pub fn build(b: *std.Build) void {
     const sokol_shdc_out = sokol_shdc_step.addPrefixedOutputFileArg("--output=", "shader.zig");
     sokol_shdc_step.addArgs(&.{ b.fmt("--slang={s}", .{@tagName(shader_lang)}), "--format=sokol_zig" });
 
+    // Declare modules and artifacts
     const internal_imports = [_]std.Build.Module.Import{
         createImport(b, "entities", optimize, target),
         createImport(b, "game", optimize, target),
