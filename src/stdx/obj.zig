@@ -16,7 +16,7 @@ const assert = std.debug.assert;
 
 pub const Obj = struct {
     name: []const u8,
-    vertices: Vertex.List,
+    vertices: Vertex.List.Slice,
     indices: []u32,
 
     pub const Vertex = struct {
@@ -24,7 +24,7 @@ pub const Obj = struct {
         uv: Vec2,
         normal: Vec3,
 
-        pub const List = stdx.StaticMultiArrayList(Vertex);
+        pub const List = std.MultiArrayList(Vertex);
     };
 
     const Parsed = struct {
@@ -32,36 +32,41 @@ pub const Obj = struct {
         positions: std.ArrayListUnmanaged(Vec3) = .empty,
         uv: std.ArrayListUnmanaged(Vec2) = .empty,
         normals: std.ArrayListUnmanaged(Vec3) = .empty,
+
+        /// maps `Index` structs parsed directly from .obj faces
+        /// to indices in vertex list
+        index_to_vertex: std.AutoHashMapUnmanaged(Index, u32) = .empty,
+        vertices: Vertex.List = .empty,
         indices: std.ArrayListUnmanaged(u32) = .empty,
+
+        section: Section = .vertices,
+
+        pub const Index = struct {
+            position: u32,
+            uv: u32,
+            normal: u32,
+        };
+        pub const Section = enum { vertices, faces };
 
         pub fn deinit(parsed: *Parsed, allocator: Allocator) void {
             allocator.free(parsed.name);
             parsed.positions.deinit(allocator);
             parsed.uv.deinit(allocator);
             parsed.normals.deinit(allocator);
+            parsed.vertices.deinit(allocator);
+            parsed.index_to_vertex.deinit(allocator);
             parsed.indices.deinit(allocator);
             parsed.* = undefined;
         }
 
-        pub fn toObj(parsed: *Parsed, allocator: Allocator) (ParseError.Malformed || Allocator.Error)!Obj {
-            if (parsed.positions.len != parsed.uv.len or parsed.uv.len != parsed.normals.len) {
-                return ParseError.Malformed;
-            }
-
-            const name = parsed.name;
-
-            const required_size = Vertex.List.requiredByteSize(parsed.positions.len);
-            const buffer = try allocator.alignedAlloc(u8, @alignOf(Vertex), required_size);
-            var vertices = Vertex.List.init(buffer);
-
-            @memcpy(vertices.items(.position), parsed.positions.items);
-            @memcpy(vertices.items(.uv), parsed.uv.items);
-            @memcpy(vertices.items(.normal), parsed.normals.items);
-
+        pub fn toObj(parsed: *Parsed, allocator: Allocator) Allocator.Error!Obj {
             parsed.positions.deinit(allocator);
             parsed.uv.deinit(allocator);
             parsed.normals.deinit(allocator);
+            parsed.index_to_vertex.deinit(allocator);
 
+            const name = parsed.name;
+            const vertices = parsed.vertices.toOwnedSlice();
             const indices = try parsed.indices.toOwnedSlice(allocator);
 
             parsed.* = undefined;
@@ -140,12 +145,15 @@ pub const Obj = struct {
                     }
                 },
                 's' => {
+                    const p = parsed orelse return ParseError.Malformed;
+                    if (p.section != .faces) return ParseError.Malformed;
                     const val = try r.readUntilDelimiterOrEof(&line_buf, '\n');
                     // TODO: interpolate normals according to smoothing
                     if (!mem.eql(u8, "off", val)) return ParseError.Unsupported;
                 },
                 'v' => {
                     const p = parsed orelse return ParseError.Malformed;
+                    if (p.section != .vertices) return ParseError.Malformed;
                     const data = try r.readUntilDelimiterOrEof(&line_buf, '\n');
                     var split = mem.splitScalar(u8, data, ' ');
                     var i: usize = 0;
@@ -176,6 +184,7 @@ pub const Obj = struct {
                 },
                 'f' => {
                     const p = parsed orelse return ParseError.Malformed;
+                    p.section = .faces;
                     if (read.len != 1) {
                         return ParseError.Malformed;
                     }
@@ -187,9 +196,43 @@ pub const Obj = struct {
                         if (i == 3) {
                             return ParseError.Malformed;
                         }
-                        const end = mem.indexOfScalar(u8, raw, '/') orelse raw.len;
-                        const index = std.fmt.parseInt(u32, raw[0..end], 10) catch return ParseError.Malformed;
-                        try p.indices.append(allocator, index);
+                        var vals = mem.splitScalar(u8, raw, '/');
+                        const position_idx = if (vals.next()) |val|
+                            std.fmt.parseInt(u32, val, 10) catch return ParseError.Malformed
+                        else
+                            return ParseError.Malformed;
+                        const uv_idx = if (vals.next()) |val|
+                            std.fmt.parseInt(u32, val, 10) catch return ParseError.Malformed
+                        else
+                            return ParseError.Unsupported;
+                        const normal_idx = if (vals.next()) |val|
+                            std.fmt.parseInt(u32, val, 10) catch return ParseError.Malformed
+                        else
+                            return ParseError.Unsupported;
+                        if (vals.peek() != null) {
+                            return ParseError.Malformed;
+                        }
+                        const index = Parsed.Index{
+                            .position = position_idx,
+                            .uv = uv_idx,
+                            .normal = normal_idx,
+                        };
+                        const vertex_gop = try p.index_to_vertex.getOrPut(allocator, index);
+                        const vertex_idx = if (vertex_gop.found_existing)
+                            vertex_gop.value_ptr.*
+                        else blk: {
+                            // obj indices are 1-based
+                            const vertex = Vertex{
+                                .position = p.positions.items[index.position - 1],
+                                .uv = p.uv.items[index.uv - 1],
+                                .normal = p.normals.items[index.normal - 1],
+                            };
+                            try p.vertices.append(allocator, vertex);
+                            const vertex_idx = (p.vertices.len - 1);
+                            vertex_gop.value_ptr.* = vertex_idx;
+                            break :blk vertex_idx;
+                        };
+                        try p.indices.append(allocator, vertex_idx);
                     }
                 },
                 else => return ParseError.Malformed,
@@ -219,7 +262,7 @@ pub const Obj = struct {
 
     pub fn deinit(obj: *Obj, allocator: Allocator) void {
         allocator.free(obj.name);
-        allocator.free(obj.vertices.bytes);
+        obj.vertices.deinit(allocator);
         allocator.free(obj.indices);
         obj.* = undefined;
     }
