@@ -6,40 +6,35 @@ const mem = std.mem;
 const testing = std.testing;
 
 const Allocator = mem.Allocator;
-const Vec2D = geo.points.Vec2D;
+const vec = geo.linalg.v2f32;
+const Vec = vec.V;
 
 const assert = std.debug.assert;
 
 /// Uniform Catmull-Rom-Splines with variable tension (𝜏)
 pub const catmull_rom = struct {
-    pub fn point(p1: Vec2D, p2: Vec2D, p3: Vec2D, p4: Vec2D, t: f32, tension: f32) Vec2D {
+    pub fn point(p1: Vec, p2: Vec, p3: Vec, p4: Vec, t: f32, tension: f32) Vec {
         const q0: f32 = (-1.0 * tension * t * t * t) + (2.0 * tension * t * t) + (-1.0 * tension * t);
         const q1: f32 = ((4.0 - tension) * t * t * t) + ((tension - 6.0) * t * t) + 2.0;
         const q2: f32 = ((tension - 4.0) * t * t * t) + ((-2.0 * (tension - 3.0)) * t * t) + (tension * t);
         const q3: f32 = (tension * t * t * t) + (-1.0 * tension * t * t);
 
-        return .{
-            .x = 0.5 * ((p1.x * q0) + (p2.x * q1) + (p3.x * q2) + (p4.x * q3)),
-            .y = 0.5 * ((p1.y * q0) + (p2.y * q1) + (p3.y * q2) + (p4.y * q3)),
-        };
+        return vec.scale((vec.scale(p1, q0) + vec.scale(p2, q1) + vec.scale(p3, q2) + vec.scale(p4, q3)), 0.5);
     }
 
-    pub fn deriv(p1: Vec2D, p2: Vec2D, p3: Vec2D, p4: Vec2D, t: f32, tension: f32) Vec2D {
+    pub fn deriv(p1: Vec, p2: Vec, p3: Vec, p4: Vec, t: f32, tension: f32) Vec {
         const q0: f32 = (-3.0 * tension * t * t) + (4.0 * tension * t) + (-1.0 * tension);
         const q1: f32 = (3.0 * (4.0 - tension) * t * t) + (2.0 * (tension - 6.0) * t);
         const q2: f32 = (3.0 * (tension - 4.0) * t * t) + (-4.0 * (tension - 3.0) * t) + tension;
         const q3: f32 = (3.0 * tension * t * t) + (-2.0 * tension * t);
 
-        return .{
-            .x = 0.5 * ((p1.x * q0) + (p2.x * q1) + (p3.x * q2) + (p4.x * q3)),
-            .y = 0.5 * ((p1.y * q0) + (p2.y * q1) + (p3.y * q2) + (p4.y * q3)),
-        };
+        return vec.scale((vec.scale(p1, q0) + vec.scale(p2, q1) + vec.scale(p3, q2) + vec.scale(p4, q3)), 0.5);
     }
 
-    pub inline fn length(p1: Vec2D, p2: Vec2D, p3: Vec2D, p4: Vec2D, tension: f32) f32 {
+    pub inline fn length(p1: Vec, p2: Vec, p3: Vec, p4: Vec, tension: f32) f32 {
         return catmull_rom.lengthAt(p1, p2, p3, p4, 1.0, tension);
     }
-    pub inline fn lengthAt(p1: Vec2D, p2: Vec2D, p3: Vec2D, p4: Vec2D, t: f32, tension: f32) f32 {
+    pub inline fn lengthAt(p1: Vec, p2: Vec, p3: Vec, p4: Vec, t: f32, tension: f32) f32 {
         return stdx.integrate.simpsonAdaptive(
             catmull_rom.integrandLength,
             .{ p1, p2, p3, p4, tension },
@@ -48,13 +43,13 @@ pub const catmull_rom = struct {
             .{},
         );
     }
-    fn integrandLength(t: f32, p1: Vec2D, p2: Vec2D, p3: Vec2D, p4: Vec2D, tension: f32) f32 {
+    fn integrandLength(t: f32, p1: Vec, p2: Vec, p3: Vec, p4: Vec, tension: f32) f32 {
         const dt = catmull_rom.deriv(p1, p2, p3, p4, t, tension);
-        const dt_norm = dt.length();
+        const dt_norm = vec.length(dt);
         return dt_norm;
     }
 
-    pub fn estimateDiscretePointCount(spline: []const Vec2D, tensions: []const f32, sample_dist: f32) usize {
+    pub fn estimateDiscretePointCount(spline: []const Vec, tensions: []const f32, sample_dist: f32) usize {
         assert(sample_dist > 0.0);
 
         var total_len: f32 = 0.0;
@@ -71,16 +66,16 @@ pub const catmull_rom = struct {
     // TODO lerp pass to smooth out inaccuracies caused by unsteady curves at segment transition points?
     pub fn discretize(
         allocator: Allocator,
-        spline: []const Vec2D,
+        spline: []const Vec,
         tensions: []const f32,
         sample_dist: f32,
-    ) Allocator.Error![]Vec2D {
+    ) Allocator.Error![]Vec {
         assert(sample_dist > 0.0);
 
         const max_approx_steps = 50;
         const eps = stdx.integrate.default_epsilon;
 
-        var samples = std.ArrayListUnmanaged(Vec2D).empty;
+        var samples = std.ArrayListUnmanaged(Vec).empty;
         errdefer samples.deinit(allocator);
 
         var carry: f32 = 0.0;
@@ -142,13 +137,13 @@ pub const catmull_rom = struct {
         return slice;
     }
 
-    const test_spline = [_]Vec2D{
-        .{ .x = 0.0, .y = 0.0 },
-        .{ .x = 1.0, .y = 2.0 },
-        .{ .x = 3.0, .y = 3.0 },
-        .{ .x = 5.0, .y = 0.0 },
-        .{ .x = 7.0, .y = 2.0 },
-        .{ .x = 9.0, .y = 0.0 },
+    const test_spline = [_]Vec{
+        .{ 0.0, 0.0 },
+        .{ 1.0, 2.0 },
+        .{ 3.0, 3.0 },
+        .{ 5.0, 0.0 },
+        .{ 7.0, 2.0 },
+        .{ 9.0, 0.0 },
     };
     const test_tensions = [_]f32{
         1.0,
@@ -186,7 +181,7 @@ pub const catmull_rom = struct {
             var max: f32 = 0.0;
             var max_idx: usize = 0;
             for (discretized[0..(discretized.len - 1)], discretized[1..], 0..) |disc, next, i| {
-                const dist = disc.distance(next);
+                const dist = vec.distance(disc, next);
                 const diff = (dist - sample_dist);
                 sum += diff;
                 const abs_diff = @abs(diff);
@@ -207,22 +202,5 @@ pub const catmull_rom = struct {
         std.debug.print("absolute cumulative error: {d}\n", .{cumulative_error_abs});
         std.debug.print("average error per point: {d}\n", .{average_error});
         std.debug.print("max error: {d} ({d}/{d})\n", .{ max_error, max_error_idx, max_error_idx + 1 });
-
-        // const expected = [_]Vec2D{
-        //     .{ .x = 1.000000, .y = 2.000000 },
-        //     .{ .x = 1.771103, .y = 2.696569 },
-        //     .{ .x = 2.672819, .y = 3.076544 },
-        //     .{ .x = 3.348697, .y = 2.651917 },
-        //     .{ .x = 3.909820, .y = 1.623593 },
-        //     .{ .x = 4.474950, .y = 0.532280 },
-        //     .{ .x = 5.032064, .y = -0.006235 },
-        //     .{ .x = 5.585170, .y = 0.340238 },
-        //     .{ .x = 6.134269, .y = 1.147060 },
-        //     .{ .x = 6.687375, .y = 1.858368 },
-        // };
-        // for (expected, discretized) |e, d| {
-        //     try testing.expectApproxEqRel(e.x, d.x, stdx.integrate.default_epsilon*10);
-        //     try testing.expectApproxEqRel(e.y, d.y, stdx.integrate.default_epsilon*10);
-        // }
     }
 };

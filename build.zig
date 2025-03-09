@@ -20,6 +20,17 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    if (target.result.abi.isAndroid()) {
+        @panic("TODO: support android");
+    }
+    if (target.result.os.tag == .emscripten) {
+        @panic("TODO: support web");
+    }
+    switch (target.result.os.tag) {
+        .windows, .macos, .linux, .ios, .emscripten => {},
+        else => @panic("unsupported target OS"),
+    }
+
     const shader_lang_hint = b.option(ShaderLanguage, "slang", "Use a custom shader language if possible") orelse .auto;
     const sokol_backend_hint: sokol_bld.SokolBackend = switch (shader_lang_hint) {
         .glsl410, .glsl430 => .gl,
@@ -29,6 +40,21 @@ pub fn build(b: *std.Build) void {
     };
 
     // Configure dependencies
+    const stb_dep = b.dependency("stb", .{});
+    const stbi_h_path = stb_dep.path("stb_image.h");
+    const stbi_tc = b.addTranslateC(.{
+        .root_source_file = stbi_h_path,
+        .target = target,
+        .optimize = optimize,
+    });
+    stbi_tc.defineCMacro("STBI_ONLY_PNG", null);
+    const stbi_mod = stbi_tc.createModule();
+    stbi_mod.addCSourceFile(.{
+        .file = stbi_h_path,
+        .flags = &.{ "-DSTB_IMAGE_IMPLEMENTATION", "-DSTBI_ONLY_PNG" },
+        .language = .c,
+    });
+
     const sokol_dep = b.dependency("sokol", .{
         .target = target,
         .optimize = optimize,
@@ -67,16 +93,22 @@ pub fn build(b: *std.Build) void {
         .wgpu => .wgsl,
         .gl => switch (shader_lang_hint) {
             .glsl410, .glsl430 => |lang| lang,
-            else => .glsl410,
+            else => .glsl430,
         },
         else => unreachable,
     };
 
-    const sokol_shdc_step = std.Build.Step.Run.create(b, "run sokol-shdc");
-    sokol_shdc_step.addFileArg(sokol_shdc_bin_path);
-    sokol_shdc_step.addPrefixedFileArg("--input=", b.path("src/render/shader.glsl"));
-    const sokol_shdc_out = sokol_shdc_step.addPrefixedOutputFileArg("--output=", "shader.zig");
-    sokol_shdc_step.addArgs(&.{ b.fmt("--slang={s}", .{@tagName(shader_lang)}), "--format=sokol_zig" });
+    const sokol_shdc_cmd = std.Build.Step.Run.create(b, "sokol-shdc");
+    sokol_shdc_cmd.addFileArg(sokol_shdc_bin_path);
+    sokol_shdc_cmd.addPrefixedFileArg("--input=", b.path("src/render/shader.glsl"));
+    const sokol_shdc_out = sokol_shdc_cmd.addPrefixedOutputFileArg("--output=", "shader.zig");
+    sokol_shdc_cmd.addArgs(&.{ b.fmt("--slang={s}", .{@tagName(shader_lang)}), "--format=sokol_zig" });
+
+    const sokol_shdc_install_file = b.addInstallFile(sokol_shdc_out, b.pathJoin(&.{ "gen", @tagName(shader_lang), "shader.zig" }));
+
+    const sokol_shdc_step = b.step("sokol-shdc", "Compile shader to Zig code");
+    sokol_shdc_step.dependOn(&sokol_shdc_cmd.step);
+    sokol_shdc_step.dependOn(&sokol_shdc_install_file.step);
 
     // Declare modules and artifacts
     const internal_imports = [_]std.Build.Module.Import{
@@ -84,6 +116,7 @@ pub fn build(b: *std.Build) void {
         createImport(b, "game", optimize, target),
         createImport(b, "stdx", optimize, target),
         createImport(b, "geo", optimize, target),
+        createImport(b, "global", optimize, target),
     };
     addImportTests(b, &internal_imports);
 
@@ -100,6 +133,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &internal_imports,
     });
+    exe_mod.addImport("stbi", stbi_mod);
     exe_mod.addImport("sokol", sokol_mod);
     exe_mod.addImport("shader", shader_mod);
 
@@ -109,7 +143,7 @@ pub fn build(b: *std.Build) void {
     });
 
     b.installArtifact(exe);
-    b.getInstallStep().dependOn(&sokol_shdc_step.step);
+    b.getInstallStep().dependOn(&sokol_shdc_cmd.step);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -127,7 +161,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &internal_imports,
     });
+    exe_unit_tests_mod.addImport("stbi", stbi_mod);
     exe_unit_tests_mod.addImport("sokol", sokol_mod);
+    exe_unit_tests_mod.addImport("shader", shader_mod);
 
     const exe_unit_tests = b.addTest(.{
         .root_module = exe_unit_tests_mod,
@@ -159,7 +195,7 @@ fn addImportTests(b: *std.Build, imports: []const std.Build.Module.Import) void 
         for (imports) |imp| {
             import.module.addImport(imp.name, imp.module);
         }
-        const test_name = b.fmt("test_{s}", .{import.name});
+        const test_name = b.fmt("test-{s}", .{import.name});
         const module_test = b.addTest(.{
             .name = test_name,
             .root_module = import.module,

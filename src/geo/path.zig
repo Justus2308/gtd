@@ -6,7 +6,8 @@ const mem = std.mem;
 const testing = std.testing;
 
 const Allocator = mem.Allocator;
-const Vec2D = geo.points.Vec2D;
+const vec = geo.linalg.v2f32;
+const Vec = vec.V;
 
 const assert = std.debug.assert;
 
@@ -17,8 +18,6 @@ pub const Path = struct {
 
     pub const max_subpath_count = 8;
     pub const max_segment_count = 64;
-
-    const mem_align = @alignOf(*anyopaque);
 
     pub inline fn build(allocator: Allocator) Allocator.Error!Path.Builder {
         return Path.Builder.init(allocator);
@@ -33,33 +32,33 @@ pub const Path = struct {
         for (path.subpaths) |subpath| {
             segment_count += subpath.len;
         }
-        const subpath_size = (path.subpaths.len * @sizeOf(Subpath));
+        const subpath_size = mem.alignForward(usize, (path.subpaths.len * @sizeOf(Subpath)), @alignOf(Path.Segment));
         const segment_size = Subpath.requiredByteSize(segment_count);
         const size = subpath_size + segment_size;
-        const raw = @as([*]align(Path.mem_align) u8, @ptrCast(@constCast(@alignCast(path.subpaths.ptr))))[0..size];
+        const raw = @as([*]align(@alignOf(Path.Subpath)) u8, @ptrCast(@constCast(@alignCast(path.subpaths.ptr))))[0..size];
         allocator.free(raw);
         path.* = undefined;
     }
 
-    pub fn discretize(path: Path, allocator: Allocator, granularity: f32) Allocator.Error![][]Vec2D {
-        var total_size = mem.alignForward(usize, (path.subpaths.len * @sizeOf([]Vec2D)), @alignOf(Vec2D));
+    pub fn discretize(path: Path, allocator: Allocator, granularity: f32) Allocator.Error![][]Vec {
+        var total_size = mem.alignForward(usize, (path.subpaths.len * @sizeOf([]Vec)), @alignOf(Vec));
         for (path.subpaths) |subpath| {
             const point_count = geo.splines.catmull_rom.estimateDiscretePointCount(
                 subpath.items(.start),
                 subpath.items(.tension),
                 granularity,
             );
-            const size = (point_count * @sizeOf(Vec2D));
+            const size = (point_count * @sizeOf(Vec));
             total_size += size;
         }
 
-        const buffer = try allocator.alignedAlloc(u8, @alignOf([]Vec2D), total_size);
+        const buffer = try allocator.alignedAlloc(u8, @alignOf([]Vec), total_size);
         errdefer allocator.free(buffer);
 
         var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer);
         const bufalloc = buffer_allocator.allocator();
 
-        const discretized = try bufalloc.alloc([]Vec2D, path.subpaths.len);
+        const discretized = try bufalloc.alloc([]Vec, path.subpaths.len);
 
         for (path.subpaths, discretized) |subpath, *disc| {
             disc.* = try geo.splines.catmull_rom.discretize(
@@ -77,7 +76,7 @@ pub const Path = struct {
     }
 
     pub const Segment = struct {
-        start: Vec2D,
+        start: Vec,
         /// [0,1]
         tension: f32,
 
@@ -135,7 +134,7 @@ pub const Path = struct {
                 const first = try b.pool.create();
                 first.data = .{
                     .segment = .{
-                        .start = Vec2D.zero,
+                        .start = vec.zero,
                         .tension = 0.0,
                     },
                     .list_id = @intCast(id),
@@ -145,7 +144,7 @@ pub const Path = struct {
                 const last = try b.pool.create();
                 last.data = .{
                     .segment = .{
-                        .start = Vec2D.zero,
+                        .start = vec.zero,
                         .tension = 0.0,
                     },
                     .list_id = @intCast(id),
@@ -191,7 +190,7 @@ pub const Path = struct {
                 const first = try b.pool.create();
                 first.data = .{
                     .segment = .{
-                        .start = Vec2D.zero,
+                        .start = vec.zero,
                         .tension = 0.0,
                     },
                     .list_id = @intCast(id),
@@ -201,7 +200,7 @@ pub const Path = struct {
                 const last = try b.pool.create();
                 last.data = .{
                     .segment = .{
-                        .start = Vec2D.zero,
+                        .start = vec.zero,
                         .tension = 0.0,
                     },
                     .list_id = @intCast(id),
@@ -248,33 +247,30 @@ pub const Path = struct {
             assert(b.segment_count == b.countSegments());
 
             var subpath_count: usize = 0;
-            var subpath_buffer_size: usize = 0;
+            var buffer_size: usize = 0;
             for (&b.segment_lists) |*list| {
                 if (list.inner.len > 2) {
                     subpath_count += 1;
-                    const local_segment_count = Path.Subpath.requiredByteSize(list.inner.len);
-                    subpath_buffer_size += mem.alignForward(usize, local_segment_count, @alignOf(Path.Segment));
+                    buffer_size += Path.Subpath.requiredByteSize(list.inner.len);
                 }
             }
+            buffer_size += mem.alignForward(usize, (subpath_count * @sizeOf(Path.Subpath)), @alignOf(Path.Segment));
 
-            const subpath_size = (subpath_count * @sizeOf(Path.Subpath));
-            const subpath_size_aligned = mem.alignForward(usize, subpath_size, @alignOf(Path.Segment));
-            const raw_size = subpath_size_aligned + subpath_buffer_size;
+            const buffer = try allocator.alignedAlloc(u8, @alignOf(Path.Subpath), buffer_size);
+            errdefer allocator.free(buffer);
 
-            const raw = try allocator.alignedAlloc(u8, Path.mem_align, raw_size);
-            errdefer allocator.free(raw);
+            var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer);
+            const bufalloc = buffer_allocator.allocator();
 
-            const subpaths = @as([*]Path.Subpath, @ptrCast(@alignCast(raw.ptr)))[0..subpath_count];
-            var buffer_memory = std.heap.FixedBufferAllocator.init(raw[subpath_size_aligned..raw.len]);
-            const buffer_allocator = buffer_memory.allocator();
+            const subpaths = try bufalloc.alloc(Path.Subpath, subpath_count);
 
             var subpath_idx: usize = 0;
             for (&b.segment_lists) |*list| {
-                const count = list.inner.len;
-                if (count > 2) {
-                    const required = Path.Subpath.requiredByteSize(count);
-                    const buffer = buffer_allocator.alignedAlloc(u8, @alignOf(Path.Segment), required) catch unreachable;
-                    subpaths[subpath_idx] = Path.Subpath.init(buffer);
+                const segment_count = list.inner.len;
+                if (segment_count > 2) {
+                    const required_size = Path.Subpath.requiredByteSize(segment_count);
+                    const subpath_buffer = try bufalloc.alignedAlloc(u8, @alignOf(Path.Segment), required_size);
+                    subpaths[subpath_idx] = Path.Subpath.init(subpath_buffer);
                     defer subpath_idx += 1;
 
                     var i: usize = 0;
@@ -288,10 +284,10 @@ pub const Path = struct {
                     }) {
                         subpaths[subpath_idx].set(i, n.data.segment);
                     }
-                    assert(i == count);
+                    assert(i == segment_count);
                 }
             }
-            assert(buffer_memory.end_index == buffer_memory.buffer.len);
+            assert(buffer_allocator.end_index == buffer_size);
 
             const path = Path{
                 .subpaths = @ptrCast(subpaths),
@@ -305,10 +301,10 @@ pub const Path = struct {
             b.segment_lists[path_id].direction.flip();
         }
 
-        // TODO find better way to address segments (tree?)
+        // TODO find better way to address segments (hash map?)
         pub fn addSegment(
             b: *Path.Builder,
-            start: Vec2D,
+            start: Vec,
             lhs: *SegmentNode,
             rhs: *SegmentNode,
         ) Allocator.Error!void {
@@ -385,7 +381,7 @@ pub const Path = struct {
         fn extrapolate(from: Path.Segment, to: Path.Segment) Path.Segment {
             const p = from.start;
             const q = to.start;
-            const ext = p.lerp(q, 2.0);
+            const ext = vec.lerp(p, q, 2.0);
             return .{
                 .start = ext,
                 .tension = 0.0,
@@ -407,8 +403,8 @@ test "build Path" {
     var b = try Path.build(allocator);
     errdefer b.deinit();
 
-    const p1 = Vec2D{ .x = 5.0, .y = 5.0 };
-    const p2 = Vec2D{ .x = 2.0, .y = 3.0 };
+    const p1 = Vec{ 5.0, 5.0 };
+    const p2 = Vec{ 2.0, 3.0 };
 
     try b.addSegment(p1, b.segment_lists[0].inner.last.?, b.segment_lists[0].inner.first.?);
     try b.addSegment(p2, b.segment_lists[0].inner.first.?, b.segment_lists[0].inner.first.?.next.?);

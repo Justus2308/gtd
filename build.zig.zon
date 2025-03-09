@@ -1,7 +1,7 @@
 .{
     .name = .gtd,
     .version = "0.0.0",
-    .minimum_zig_version = "0.14.0-dev.3452+0367d684f",
+    .minimum_zig_version = "0.14.0",
     .fingerprint = 0xb3551d049a7d1315,
 
     .dependencies = .{
@@ -12,6 +12,10 @@
         .sokol_tools_bin = .{
             .url = "https://github.com/floooh/sokol-tools-bin/archive/master.tar.gz",
             .hash = "N-V-__8AAPiO9QNzW747-YsdWwiiBaNLStW1ar0uVCgmxS4D",
+        },
+        .stb = .{
+            .url = "https://github.com/nothings/stb/archive/master.tar.gz",
+            .hash = "N-V-__8AAAokTgCCkRqtrvPINtODP3xgOG7h7kb-_7bFR4X3",
         },
     },
     .paths = .{

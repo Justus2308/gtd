@@ -1,206 +1,216 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const game = @import("game");
+const geo = @import("geo");
+const events = @import("events.zig");
+const global = @import("global");
+const shader = @import("shader");
 const sokol = @import("sokol");
-const gfx = sokol.gfx;
-const glue = sokol.glue;
 
 const mem = std.mem;
+const audio = sokol.audio;
+const gfx = sokol.gfx;
+
+const v2f32 = geo.linalg.v2f32;
+const v4f32 = geo.linalg.v4f32;
+const m4f32 = geo.linalg.m4f32;
 
 const Allocator = mem.Allocator;
 
 const assert = std.debug.assert;
 const panic = std.debug.panic;
-const sokol_log = sokol.log.func;
 
-const MainState = struct {
-    timer: std.time.Timer,
-    game_state: game.State,
-    render_state: @import("render.zig").AppState,
+const window_width = 1280;
+const window_height = 720;
+const window_title = "GTD";
+
+const sokol_app_desc = sokol.app.Desc{
+    .init_cb = &sokolInit,
+    .cleanup_cb = &sokolCleanup,
+    .frame_cb = &sokolFrame,
+    .event_cb = &sokolEvent,
+    .width = window_width,
+    .height = window_height,
+    .fullscreen = true,
+    .window_title = window_title,
+    .icon = .{ .sokol_default = true },
+    .logger = .{ .func = &sokolLog },
+    .win32_console_utf8 = true,
+    .win32_console_attach = true,
 };
 
 pub fn main() !void {
-    const allocator = Gpa.allocator_instance;
-    defer Gpa.deinit();
-
-    _ = allocator;
+    sokol.app.run(sokol_app_desc);
 }
 
-pub const Gpa = struct {
-    ctx: Context,
-    allocator: Allocator,
+// TODO: For android builds
+comptime {
+    if (builtin.target.abi.isAndroid()) {
+        @export(&sokolMain, .{ .name = "sokol_main", .linkage = .strong });
+    }
+}
+fn sokolMain(argc: c_int, argv: [*][*]c_char) callconv(.c) sokol.app.Desc {
+    _ = .{ argc, argv };
+    return sokol_app_desc;
+}
 
-    external_allocs: std.AutoHashMapUnmanaged(usize, usize) = .empty,
-    external_mutex: std.Thread.Mutex = .{},
+export fn sokolLog(
+    tag: [*:0]const u8,
+    log_level: u32,
+    log_item_id: u32,
+    message_or_null: ?[*:0]const u8,
+    line_nr: u32,
+    filename_or_null: ?[*:0]const u8,
+    user_data: ?*anyopaque,
+) callconv(.c) void {
+    _ = user_data;
+    const message = message_or_null orelse "No message provided";
+    const filename = filename_or_null orelse "?";
+    const log_item_enum_tag: ?sokol.app.LogItem = std.meta.intToEnum(sokol.app.LogItem, log_item_id) catch null;
+    const log_item = if (log_item_enum_tag) @tagName(log_item_enum_tag) ++ ": " else "";
+    const format = "{[{[tag]s}:{[filename]s}:{[line_nr]d}]: {[log_item]s}{[message]s}";
+    const args = .{ tag, filename, line_nr, log_item, message };
+    const sokol_log = std.log.scoped(.sokol);
+    switch (log_level) {
+        0...1 => sokol_log.err(format, args),
+        2 => sokol_log.warn(format, args),
+        3 => sokol_log.info(format, args),
+    }
+}
 
-    var global: Gpa = if (Gpa.is_debug) blk: {
-        const ctx = std.heap.DebugAllocator(.{}){};
-        break :blk .{
-            .ctx = ctx,
-            .allocator = ctx.allocator(),
-        };
-    } else .{
-        .ctx = {},
-        .allocator = std.heap.smp_allocator,
+export fn sokolInit() callconv(.c) void {
+    gfx.setup(.{
+        .environment = sokol.glue.environment(),
+        .logger = .{ .func = &sokolLog },
+    });
+    audio.setup(.{ .logger = .{ .func = &sokolLog } });
+
+    global.render_state.bindings.vertex_buffers[0] = gfx.makeBuffer(.{
+        .usage = .DYNAMIC,
+        .size = 0,
+    });
+
+    var indices: [max_quad_count]u16 = undefined;
+    var i: usize = 0;
+    while (i < indices.len) : (i += 6) {
+        indices[i + 0] = (((i / 6) * 4) + 0);
+        indices[i + 1] = (((i / 6) * 4) + 1);
+        indices[i + 2] = (((i / 6) * 4) + 2);
+        indices[i + 3] = (((i / 6) * 4) + 0);
+        indices[i + 4] = (((i / 6) * 4) + 2);
+        indices[i + 5] = (((i / 6) * 4) + 3);
+    }
+    global.render_state.bindings.index_buffer = gfx.makeBuffer(.{
+        .type = .INDEXBUFFER,
+        .data = .{ .ptr = &indices, .size = @sizeOf(indices) },
+    });
+
+    global.render_state.bindings.samplers[shader.SMP_default_sampler] = gfx.makeSampler(.{});
+
+    var pipe_layout_attrs: @FieldType(gfx.VertexLayoutState, "attrs") = @splat(.{});
+    pipe_layout_attrs[shader.ATTR_quad_position] = .{ .format = .FLOAT2 };
+    pipe_layout_attrs[shader.ATTR_quad_color0] = .{ .format = .FLOAT4 };
+    pipe_layout_attrs[shader.ATTR_quad_uv0] = .{ .format = .FLOAT2 };
+    pipe_layout_attrs[shader.ATTR_quad_bytes0] = .{ .format = .UBYTE4N };
+
+    var pipe_colors: @FieldType(gfx.PipelineDesc, "colors") = @splat(.{});
+    pipe_colors[0] = .{ .blend = .{
+        .enabled = true,
+        .src_factor_rgb = .SRC_ALPHA,
+        .dst_factor_rgb = .ONE_MINUS_SRC_ALPHA,
+        .op_rgb = .ADD,
+        .src_factor_alpha = .ONE,
+        .dst_factor_alpha = .ONE_MINUS_SRC_ALPHA,
+        .op_alpha = .ADD,
+    } };
+
+    global.render_state.pipeline = gfx.makePipeline(.{
+        .shader = gfx.makeShader(shader.quadShaderDesc(gfx.queryBackend())),
+        .index_type = .UINT16,
+        .layout = .{ .attrs = pipe_layout_attrs },
+        .colors = pipe_colors,
+    });
+
+    var pass_act_colors: @FieldType(gfx.PassAction, "colors") = @splat(.{});
+    pass_act_colors[0] = .{ .load_action = .CLEAR, .clear_value = .{ .r = 0, .g = 0, .b = 0, .a = 1 } };
+
+    global.render_state.pass_action = .{
+        .colors = pass_act_colors,
     };
+}
 
-    var deinit_once = std.once(Gpa.deinitImpl);
+export fn sokolCleanup() callconv(.c) void {
+    gfx.shutdown();
+    audio.shutdown();
+    global.deinit();
+}
 
-    pub const allocator_instance = Gpa.global.allocator;
+export fn sokolFrame() callconv(.c) void {
+    const frame_time: f32 = @floatCast(sokol.app.frameDuration());
 
-    const external_alignment = @divExact(builtin.target.ptrBitWidth(), 4);
-    const is_debug = (builtin.mode == .Debug);
+    @memset(@as([]u8, @ptrCast(&draw_frame)), 0);
 
-    pub const Context = if (Gpa.is_debug) std.heap.DebugAllocator(.{}) else void;
+    global.render_state.bindings.images[0] = .{}; // TODO
 
-    pub fn deinit() void {
-        Gpa.deinit_once.call();
+    gfx.updateBuffer(global.render_state.bindings.vertex_buffers[0], .{
+        .ptr = &draw_frame.quads,
+        .size = (@sizeOf(Quad) * draw_frame.quads.len),
+    });
+    gfx.beginPass(.{
+        .action = global.render_state.pass_action,
+        .swapchain = sokol.glue.swapchain(),
+    });
+    gfx.applyPipeline(global.render_state.pipeline);
+    gfx.applyBindings(global.render_state.bindings);
+    gfx.draw(0, (6 * draw_frame.quad_count), 1);
+    gfx.endPass();
+    gfx.commit();
+}
+
+export fn sokolEvent(event: *const sokol.app.Event) callconv(.c) void {
+    switch (event.type) {
+        .KEY_DOWN, .KEY_UP => events.handleKeyboardEvent(event.*),
+        .MOUSE_DOWN, .MOUSE_UP, .MOUSE_MOVE, .MOUSE_SCROLL, .MOUSE_ENTER, .MOUSE_LEAVE => events.handleMouseEvent(event.*),
+        .TOUCHES_BEGAN, .TOUCHES_ENDED, .TOUCHES_MOVED, .TOUCHES_CANCELLED => events.handleTouchEvent(event.*),
+        .SUSPENDED, .RESUMED, .RESTORED, .QUIT_REQUESTED => events.handleProcEvent(event.*),
+        .RESIZED, .FOCUSED, .UNFOCUSED => events.handleWindowEvent(event.*),
+        .CHAR, .NUM, .CLIPBOARD_PASTED => events.handleDataInputEvent(event.*),
+        .ICONIFIED, .FILES_DROPPED => {},
+
+        .INVALID => event_log.info("encountered invalid event", .{}),
     }
-    fn deinitImpl() void {
-        Gpa.global.external_mutex.lock();
-        defer Gpa.global.external_mutex.unlock();
-        if (Gpa.is_debug) {
-            assert(Gpa.global.ctx.deinit() == .ok);
-        }
-        assert(Gpa.global.external_allocs.size == 0);
-    }
+}
 
-    pub fn externalAlloc(size: usize) callconv(.c) ?*anyopaque {
-        const ptr = Gpa.global.allocator.rawAlloc(size, Gpa.external_alignment, @returnAddress());
-        if (ptr) |p| {
-            @branchHint(.likely);
-            const addr = @intFromPtr(p);
-            Gpa.global.external_mutex.lock();
-            defer Gpa.global.external_mutex.unlock();
-            Gpa.global.external_allocs.putNoClobber(Gpa.global.allocator, addr, size) catch {
-                @branchHint(.cold);
-                Gpa.global.allocator.rawFree(p[0..size], Gpa.external_alignment, @returnAddress());
-                return null;
-            };
-        }
-        return @ptrCast(ptr);
-    }
-    pub fn externalRealloc(ptr: ?*anyopaque, new_size: usize) callconv(.c) ?*anyopaque {
-        if (ptr) |p| {
-            @branchHint(.likely);
-            const addr = @intFromPtr(p);
-            Gpa.global.external_mutex.lock();
-            defer global.external_mutex.unlock();
-            const size = Gpa.global.external_allocs.get(addr) orelse @panic("unregistered allocation");
-            const new_ptr = if (Gpa.global.allocator.rawResize(p[0..size], Gpa.external_alignment, new_size, @returnAddress()))
-                ptr
-            else blk: {
-                const remapped = Gpa.global.allocator.rawAlloc(size, Gpa.external_alignment, new_size, @returnAddress());
-                if (remapped) |r| {
-                    @branchHint(.likely);
-                    const ok = Gpa.global.external_allocs.remove(addr);
-                    if (!ok) {
-                        @branchHint(.cold);
-                        @panic("unreachable but unrecoverable");
-                    }
-                    const new_addr = @intFromPtr(r);
-                    Gpa.global.external_allocs.putNoClobber(Gpa.global.allocator, new_addr, new_size) catch {
-                        @branchHint(.cold);
-                        Gpa.global.allocator.rawFree(r[0..new_size], Gpa.external_alignment, @returnAddress());
-                        return null;
-                    };
-                    const copy_size = @min(size, new_size);
-                    @memcpy(r[0..copy_size], p[0..copy_size]);
-                    Gpa.global.allocator.rawFree(p[0..size], Gpa.external_alignment, @returnAddress());
-                }
-                break :blk remapped;
-            };
-            return new_ptr;
-        } else {
-            @branchHint(.unlikely);
-            return Gpa.externalAlloc(new_size);
-        }
-    }
-    pub fn externalFree(ptr: ?*anyopaque) callconv(.c) void {
-        if (ptr) |p| {
-            @branchHint(.likely);
-            const addr = @intFromPtr(p);
-            Gpa.global.external_mutex.lock();
-            defer Gpa.global.external_mutex.unlock();
-            const size_entry = Gpa.global.external_allocs.fetchRemove(addr) orelse @panic("unregistered allocation");
-            Gpa.global.allocator.rawFree(p[0..size_entry.value], Gpa.external_alignment, @returnAddress());
-        }
-    }
+const event_log = std.log.scoped(.event);
+
+pub const Vertex = extern struct {
+    pos: v2f32.V = v2f32.zero,
+    col: v4f32.V = v4f32.zero,
+    uv: v2f32.V = v2f32.zero,
+    tex_index: u8 = 0,
+};
+pub const Quad = [4]Vertex;
+
+pub const max_quad_count = 8 * 1024;
+pub const max_vert_count = 4 * max_quad_count;
+
+pub const DrawFrame = extern struct {
+    quads: [max_quad_count]Quad = @splat(@as(Quad, @splat(.{}))),
+    quad_count: c_int = 0,
+    projection: m4f32.M = m4f32.zero,
 };
 
-// pub fn mainSDL() !void {
-//     // Init SDL
-//     if (!(c.SDL_SetHintWithPriority(
-//         c.SDL_HINT_NO_SIGNAL_HANDLERS,
-//         "1",
-//         c.SDL_HINT_OVERRIDE,
-//     ) != c.SDL_FALSE)) {
-//         panic("failed to disable sdl signal handlers\n", .{});
-//     }
-//     if (c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_GAMECONTROLLER) != 0) {
-//         panic("SDL_Init failed: {s}\n", .{ c.SDL_GetError() });
-//     }
-//     defer c.SDL_Quit();
+pub const palette = struct {
+    const data = std.enums.directEnumArray(Name, gfx.Color, 0, .{
+        .white = .{ .r = 1, .g = 1, .b = 1, .a = 1 },
+        .black = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
+    });
+    pub const Name = enum(usize) {
+        white = 0,
+        black,
+    };
 
-//     const window = c.SDL_CreateWindow(
-//         "Goons TD",
-//         c.SDL_WINDOWPOS_CENTERED, c.SDL_WINDOWPOS_CENTERED,
-//         680, 480,
-//         c.SDL_WINDOW_FULLSCREEN_DESKTOP,
-//     ) orelse return error.WindowCreationFailed;
-//     defer c.SDL_DestroyWindow(window);
-
-//     const renderer_flags: u32 = c.SDL_RENDERER_PRESENTVSYNC;
-//     const renderer: *c.SDL_Renderer = c.SDL_CreateRenderer(window, -1, renderer_flags) orelse {
-//         panic("SDL_CreateRenderer failed: {s}\n", .{ c.SDL_GetError() });
-//     };
-//     defer c.SDL_DestroyRenderer(renderer);
-// }
-
-// pub fn mainRaylib() !void {
-//     raylib.setConfigFlags(.{
-//         .borderless_windowed_mode = true,
-//         // .fullscreen_mode = true,
-//         .window_resizable = true,
-//         .window_highdpi = true,
-//     });
-
-//     const monitor = raylib.getCurrentMonitor();
-//     const refresh_rate = raylib.getMonitorRefreshRate(monitor);
-
-//     const monitor_width = raylib.getMonitorWidth(monitor);
-//     const monitor_height = raylib.getMonitorHeight(monitor);
-
-//     raylib.initWindow(monitor_width, monitor_height, "Goons TD");
-//     defer raylib.closeWindow();
-
-//     raylib.setExitKey(.key_null);
-//     raylib.setTargetFPS(refresh_rate);
-//     raylib.setWindowMonitor(monitor);
-//     raylib.setWindowFocused();
-
-//     while (!raylib.windowShouldClose()) {
-//         if (raylib.isWindowResized()) {
-//             // const window_scaling = raylib.getWindowScaleDPI();
-
-//         }
-
-//         raylib.beginDrawing();
-
-//         // --- tmp ---
-//         raylib.clearBackground(raylib.Color.ray_white);
-
-//         const scaling = raylib.getWindowScaleDPI();
-//         const fps = raylib.getFPS();
-//         var buf: [256]u8 = undefined;
-//         const dims = try std.fmt.bufPrintZ(&buf, "resolution: {d}x{d} | scaling: {d}x{d} | fps: {d}", .{
-//             raylib.getMonitorWidth(monitor), raylib.getMonitorHeight(monitor),
-//             scaling.x, scaling.y,
-//             fps,
-//         });
-//         raylib.drawText(dims, 0, 0, 40, raylib.Color.light_gray);
-//         // --- tmp ---
-
-//         raylib.endDrawing();
-//     }
-// }
+    pub inline fn get(comptime name: palette.Name) gfx.Color {
+        comptime return palette.data[@intFromEnum(name)];
+    }
+};

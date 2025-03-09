@@ -52,7 +52,7 @@ pub fn vec(comptime len: comptime_int, comptime T: type) type {
         pub const cross = switch (len) {
             2 => cross2,
             3 => cross3,
-            else => @compileError(std.fmt.comptimePrint("cross product is not implemented for vector length {d}", .{len})),
+            else => crossUnimpl,
         };
         inline fn cross2(v: V, w: V) S {
             return (v[0] * w[1]) - (v[1] * w[0]);
@@ -68,6 +68,10 @@ pub fn vec(comptime len: comptime_int, comptime T: type) type {
             const tmp3 = (tmp0 * tmp1);
             const tmp4 = @shuffle(S, tmp2, undefined, mask0);
             return (tmp3 - tmp4);
+        }
+
+        fn crossUnimpl(_: V, _: V) noreturn {
+            @panic(std.fmt.comptimePrint("cross product is not implemented for vector length {d}", .{len}));
         }
 
         pub inline fn distance(v: V, w: V) S {
@@ -198,6 +202,42 @@ pub fn mat(comptime dim: comptime_int, comptime T: type) type {
                 break :blk res;
             };
             return @shuffle(S, m, undefined, mask);
+        }
+
+        pub const lookAt = if (dim == 4) lookAt4 else lookAtUnimpl;
+
+        fn lookAt4(eye: v3f32.V, center: v3f32.V, up: v3f32.V) M {
+            var res: [dim][dim]S = undefined;
+
+            const f = v3f32.normalize(center - eye);
+            const s = v3f32.normalize(v3f32.cross(f, up));
+            const u = v3f32.cross(s, f);
+
+            res[0][0] = s[0];
+            res[0][1] = u[0];
+            res[0][2] = -f[0];
+            res[0][3] = 0.0;
+
+            res[1][0] = s[1];
+            res[1][1] = u[1];
+            res[1][2] = -f[1];
+            res[1][3] = 0.0;
+
+            res[2][0] = s[2];
+            res[2][1] = u[2];
+            res[2][2] = -f[2];
+            res[2][3] = 0.0;
+
+            res[3][0] = -v3f32.cross(s, eye);
+            res[3][1] = -v3f32.cross(u, eye);
+            res[3][2] = v3f32.cross(f, eye);
+            res[3][3] = 1.0;
+
+            return @bitCast(res);
+        }
+        fn lookAtUnimpl(eye: v3f32.V, center: v3f32.V, up: v3f32.V) noreturn {
+            _ = .{ eye, center, up };
+            @panic("lookAt is only implemented for dim=4");
         }
 
         pub const eql = mat_as_vec.eql;

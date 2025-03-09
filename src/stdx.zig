@@ -7,12 +7,11 @@ const expect = std.testing.expext;
 
 const cache_line = std.atomic.cache_line;
 
-
+pub const Asset = @import("stdx/Asset.zig");
 pub const ThreadPool = @import("stdx/ThreadPool.zig");
 pub const integrate = @import("stdx/integrate.zig");
 pub const simd = @import("stdx/simd.zig");
 pub const StaticMultiArrayList = @import("stdx/static_multi_array_list.zig").StaticMultiArrayList;
-
 
 pub fn todo(comptime msg: []const u8) noreturn {
     @compileError("TODO: " ++ msg);

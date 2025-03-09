@@ -53,7 +53,7 @@ fn init() callconv(.c) void {
     }
     app_state.bindings.index_buffer = gfx.makeBuffer(.{
         .type = .INDEXBUFFER,
-        .data = .{ .ptr = &indices, .size = indices.len },
+        .data = .{ .ptr = &indices, .size = @sizeOf(indices) },
     });
 
     app_state.bindings.samplers[shader.SMP_default_sampler] = gfx.makeSampler(.{});
@@ -137,7 +137,11 @@ pub const Palette = struct {
         .black = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
     });
     pub const Name = enum(usize) {
-        white,
+        white = 0,
         black,
     };
+
+    pub inline fn get(comptime name: Name) gfx.Color {
+        comptime return Palette.data[@intFromEnum(name)];
+    }
 };
