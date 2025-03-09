@@ -28,20 +28,24 @@ const Path = union(enum) {
 
 pub fn resolvePath(asset: Asset, allocator: Allocator) Allocator.Error![:0]const u8 {
     return switch (asset.path) {
-        .absoulte => |abs| try allocator.dupe(u8, abs),
-        .relative => |rel| std.fs.path.joinZ(allocator, &.{
+        .absolute => |absolute| try allocator.dupe(u8, absolute),
+        .relative => |relative| std.fs.path.joinZ(allocator, &.{
             global.asset_path,
             @tagName(asset.kind),
-            rel,
+            relative,
         }) catch return Allocator.Error,
     };
 }
 
 const std = @import("std");
+const stdx = @import("stdx");
 const global = @import("global");
 const stbi = @import("stbi");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
+const log = std.log.scoped(.assets);
+
+// TODO: split assets into separate arrays for each category?
 
 pub const Manager = struct {
     name_to_id: std.StringHashMapUnmanaged(Asset.Id) = .empty,
@@ -52,6 +56,22 @@ pub const Manager = struct {
     lock: std.Thread.RwLock = .{},
 
     pub const Error = error{Stbi} || Allocator.Error;
+
+    pub fn deinit(m: *Manager, allocator: Allocator) void {
+        m.name_to_id.deinit(allocator);
+        m.id_to_index.deinit(allocator);
+        for (m.assets.items) |cached| {
+            switch (cached) {
+                .texture => |texture| texture.unload(),
+                .model => |model| model.deinit(allocator),
+                .map => @panic("TODO: implement"),
+                .tombstone => {},
+            }
+        }
+        m.assets.deinit(allocator);
+        log.debug("asset manager deinitialized", .{});
+        m.* = undefined;
+    }
 
     /// Tries to only lock manager exclusively when asset is not loaded yet.
     /// This comes at the cost of more locking actions and double checks in
@@ -98,6 +118,7 @@ pub const Manager = struct {
     }
 
     /// Guaranteed to succeed and never lock exclusively.
+    /// This function will never modify the asset cache.
     pub fn getIfLoaded(m: *Manager, asset: Asset) ?Asset.Cached {
         m.lock.lockShared();
         defer m.lock.unlockShared();
@@ -129,7 +150,7 @@ pub const Manager = struct {
         }
     }
 
-    /// Locks manager exclusively ; invalidates all references to the asset.
+    /// Locks manager exclusively ; invalidates all references to the cached asset.
     pub fn unload(m: *Manager, allocator: Allocator, asset: Asset) void {
         m.lock.lock();
         defer m.lock.unlock();
@@ -141,38 +162,19 @@ pub const Manager = struct {
         const id_idx = m.id_to_index.fetchRemove(id) orelse return;
         const index = id_idx.value;
         const cached = &m.assets.items[index];
-        switch (cached.meta) {
-            .texture => Manager.unloadTexture(cached.*),
+        switch (cached.*) {
+            .texture => |texture| texture.unload(),
+            .model => |model| model.deinit(allocator),
+            .map => @panic("TODO: implement"),
             .tombstone => unreachable,
-            else => allocator.free(cached.data),
         }
-        cached.* = Asset.Cached.tombstone;
-    }
-
-    fn loadTexture(path: [:0]const u8, is_sprite: bool) Error!Asset.Cached {
-        var width: c_int, var height: c_int, var channels: c_int = undefined;
-        const data_raw: [*]u8 = stbi.stbi_load(path, &width, &height, &channels, 0) orelse {
-            @branchHint(.cold);
-            return Error.Stbi;
-        };
-        const data = data_raw[0..(width * height * channels)];
-        return Asset.Cached{
-            .meta = .{ .texture = .{
-                .width = @intCast(width),
-                .height = @intCast(height),
-                .channels = @intCast(channels),
-                .sprite_count = if (is_sprite)
-                    @intCast(@divExact(width, sprite_width))
-                else
-                    0,
-            } },
-            .data = data,
-        };
-    }
-
-    fn unloadTexture(cached: Asset.Cached) void {
-        assert(std.meta.activeTag(cached.meta) == .texture);
-        stbi.stbi_image_free(cached.data.ptr);
+        log.info("unloaded asset {s}:{d}:{s} at index {d}", .{
+            if (std.meta.activeTag(asset.ident) == .name) asset.ident.name else "?",
+            id,
+            @tagName(cached.*),
+            index,
+        });
+        cached.* = .tombstone;
     }
 
     /// Asserts that asset is not in cache yet.
@@ -184,17 +186,25 @@ pub const Manager = struct {
         var path_allocator = std.heap.FixedBufferAllocator.init(&path_buffer);
         const path = try asset.resolvePath(path_allocator.allocator());
         const cached: Asset.Cached = switch (asset.kind) {
-            .@"texture/plain" => Manager.loadTexture(path, false),
-            .@"texture/sprite" => Manager.loadTexture(path, true),
+            .@"texture/plain" => .{ .texture = .load(path, .plain) },
+            .@"texture/sprite" => .{ .texture = .load(path, .sprite) },
             .model, .map => @panic("TODO: implement"),
         };
-        errdefer switch (asset.kind) {
-            .@"texture/plain", .@"texture/sprite" => Manager.unloadTexture(cached),
-            else => allocator.free(cached.data),
+        errdefer switch (cached) {
+            .texture => |texture| texture.unload(),
+            .model => |model| model.deinit(allocator),
+            .map => @panic("TODO: implement"),
+            .tombstone => unreachable,
         };
         const index = try m.nextIndex(allocator);
         try m.id_to_index.putNoClobber(allocator, id, index);
         m.assets.items[index] = cached;
+        log.info("cached asset {s}:{d}:{s} at index {d}", .{
+            if (std.meta.activeTag(asset.ident) == .name) asset.ident.name else "?",
+            id,
+            @tagName(cached.*),
+            index,
+        });
         return index;
     }
 
@@ -207,48 +217,92 @@ pub const Manager = struct {
     /// Assumes that an exclusive lock is held.
     inline fn nextIndex(m: *Manager, allocator: Allocator) Error!u32 {
         for (m.assets.items, 0..) |cached, i| {
-            if (std.meta.activeTag(cached.meta) == .tombstone) {
+            if (cached == .tombstone) {
                 @branchHint(.unlikely);
                 return @intCast(i);
             }
         } else {
-            _ = try m.assets.addOne(allocator);
+            try m.assets.append(allocator, .tombstone);
             return @intCast(m.assets.items.len - 1);
         }
     }
 };
 
-const Cached = struct {
-    meta: Meta,
-    data: []u8,
+const Cached = union(enum) {
+    texture: Texture,
+    model: Model,
+    map: Map,
+    tombstone,
 
-    const Meta = union(enum) {
-        texture: Texture,
-        model: Model,
-        map: Map,
-        tombstone,
+    const Texture = struct {
+        width: u32,
+        height: u32,
+        channels: u16,
+        sprite_count: u16,
+        data: []u8,
 
-        const Texture = struct {
-            width: u32,
-            height: u32,
-            channels: u16,
-            sprite_count: u16,
-        };
+        pub const Kind = enum { plain, sprite };
+        pub const Error = error{Stbi};
 
-        const Model = struct {
-            texture: Asset.Id,
-            vert_idx: u32,
-            uv_idx: u32,
-            end_idx: u32,
-        };
+        pub fn load(path: [:0]const u8, kind_: Texture.Kind) Error!Texture {
+            var width: c_int, var height: c_int, var channels: c_int = undefined;
+            const data_raw: [*]u8 = stbi.stbi_load(path, &width, &height, &channels, 0) orelse {
+                @branchHint(.cold);
+                std.log.scoped(.stbi).err("image load failed at {s}: {s}", .{
+                    path,
+                    stbi.stbi_failure_reason() orelse "no reason provided",
+                });
+                return Error.Stbi;
+            };
+            const sprite_count: u16 = switch (kind_) {
+                .plain => 0,
+                .sprite => @intCast(@divExact(width, Asset.sprite_width)),
+            };
+            const data = data_raw[0..(width * height * channels)];
+            return Asset.Cached.Texture{
+                .width = @intCast(width),
+                .height = @intCast(height),
+                .channels = @intCast(channels),
+                .sprite_count = sprite_count,
+                .data = data,
+            };
+        }
+        pub fn unload(texture: *Texture) void {
+            stbi.stbi_image_free(texture.data.ptr);
+            texture.* = undefined;
+        }
 
-        const Map = struct {
-            texture: Asset.Id,
-        };
+        pub inline fn kind(texture: Texture) Texture.Kind {
+            return if (texture.sprite_count > 0) .sprite else .plain;
+        }
     };
 
-    pub const tombstone = Cached{
-        .meta = .tombstone,
-        .data = undefined,
+    const Model = struct {
+        texture: Asset.Id,
+        vertices: stdx.Obj.Vertex.List.Slice,
+        indices: []u32,
+
+        /// Invalidates obj
+        pub fn fromObj(allocator: Allocator, obj: *stdx.Obj, texture: Asset.Id) Model {
+            allocator.free(obj);
+            const vertices = obj.vertices;
+            const indices = obj.indices;
+            obj.* = undefined;
+            return Model{
+                .texture = texture,
+                .vertices = vertices,
+                .indices = indices,
+            };
+        }
+
+        pub fn deinit(model: *Model, allocator: Allocator) void {
+            model.vertices.deinit(allocator);
+            allocator.free(model.indices);
+            model.* = undefined;
+        }
+    };
+
+    const Map = struct {
+        texture: Asset.Id,
     };
 };
