@@ -58,9 +58,7 @@ pub const catmull_rom = struct {
             total_len += len;
         }
         const point_count_fp = total_len / sample_dist;
-        var point_count: usize = @intFromFloat(point_count_fp);
-        point_count += @max(1, (point_count >> 10));
-        return point_count;
+        return @intFromFloat(@ceil(point_count_fp));
     }
 
     // TODO lerp pass to smooth out inaccuracies caused by unsteady curves at segment transition points?

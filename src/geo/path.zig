@@ -42,6 +42,7 @@ pub const Path = struct {
 
     pub fn discretize(path: Path, allocator: Allocator, granularity: f32) Allocator.Error![][]Vec {
         var total_size = mem.alignForward(usize, (path.subpaths.len * @sizeOf([]Vec)), @alignOf(Vec));
+        var max_subpath_size: usize = 0;
         for (path.subpaths) |subpath| {
             const point_count = geo.splines.catmull_rom.estimateDiscretePointCount(
                 subpath.items(.start),
@@ -50,7 +51,9 @@ pub const Path = struct {
             );
             const size = (point_count * @sizeOf(Vec));
             total_size += size;
+            max_subpath_size = @max(max_subpath_size, size);
         }
+        total_size += max_subpath_size;
 
         const buffer = try allocator.alignedAlloc(u8, @alignOf([]Vec), total_size);
         errdefer allocator.free(buffer);
