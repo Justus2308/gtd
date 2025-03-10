@@ -2,10 +2,15 @@ const std = @import("std");
 const entities = @import("entities");
 const stdx = @import("stdx");
 const geo = @import("geo");
+const sokol = @import("sokol");
 
 const math = std.math;
 const mem = std.mem;
 const simd = std.simd;
+
+const v2f32 = geo.linalg.v2f32;
+const v3f32 = geo.linalg.v3f32;
+const m4f32 = geo.linalg.m4f32;
 
 const Allocator = mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -16,20 +21,17 @@ const Ape = entities.Ape;
 const Goon = entities.Goon;
 const Effect = entities.Effect;
 const CollisionMap = entities.CollisionMap;
+const Asset = stdx.Asset;
 const Map = @import("Map.zig");
 const Round = @import("Round.zig");
-const Vec2D = geo.points.Vec2D;
 
 // game state
 allocator: Allocator,
 arena: ArenaAllocator,
 
-/// Everything is drawn to this first before
-/// this is finally drawn to the screen.
-draw_target: raylib.RenderTexture2D,
+asset_manager: Asset.Manager,
 
 map: *Map,
-background: c.SDL_Texture,
 
 difficulty: Difficulty,
 mode: Mode,
@@ -65,10 +67,7 @@ aoe_buffer: Ape.Attack.AoE.Buffer,
 extra_apes: Ape.Mutable.List,
 extra_effects: Effect.List,
 
-
-
 const State = @This();
-
 
 // prd <-> per-round data
 pub const base_prd_size = 512;
@@ -130,13 +129,14 @@ pub fn init(
         .goon_immutable_ptr = &Goon.immutable_earlygame,
 
         .apes = Ape.Mutable.List.empty,
-        .goon_blocks = Goon.Block.List.init(arena.allocator(), ),
+        .goon_blocks = Goon.Block.List.init(
+            arena.allocator(),
+        ),
     };
 }
 
-
 pub fn initRound(state: *State, round_id: u64) Allocator.Error!void {
-    const round = state.rounds[round_id-1];
+    const round = state.rounds[round_id - 1];
 
     // Estimate how many goons need to be created this round to calculate how much memory is required.
     const goon_count = round.estimateGoonCount();
@@ -144,17 +144,16 @@ pub fn initRound(state: *State, round_id: u64) Allocator.Error!void {
     const goon_mem_needed = @sizeOf(Goon.Block) * goon_blocks_needed;
 
     const ape_count = state.apes.len;
-    const ape_mem_needed = mem.alignForward(usize, (@sizeOf(Ape.Mutable) * ape_count) + mem.page_size/4, mem.page_size);
+    const ape_mem_needed = mem.alignForward(usize, (@sizeOf(Ape.Mutable) * ape_count) + mem.page_size / 4, mem.page_size);
 
     const effect_count = state.effects.items.len;
-    const effect_mem_needed = mem.alignForward(usize, (@sizeOf(Effect) * effect_count) + mem.page_size/4, mem.page_size);
+    const effect_mem_needed = mem.alignForward(usize, (@sizeOf(Effect) * effect_count) + mem.page_size / 4, mem.page_size);
 
     const persistent_estimate = ape_mem_needed + effect_mem_needed;
     const per_round_estimate = goon_mem_needed;
 
     state.goon_blocks.reset(.{ .free_all = {} });
     state.arena;
-
 
     state.round = round_id;
     state.scaleHp();
@@ -166,7 +165,6 @@ pub fn initRound(state: *State, round_id: u64) Allocator.Error!void {
         state.goon_immutable_ptr = &Goon.immutable_lategame;
     }
 }
-
 
 /// Embed an `extra_allocation.Node` as a field into an extra allocation.
 /// Access your data via `@fieldParentPtr`.
@@ -186,11 +184,7 @@ pub const extra_allocation = struct {
         effect,
     };
 
-    pub fn create(
-        allocator: Allocator,
-        comptime data_tag: extra_allocation.DataTag,
-        data: DataType(data_tag)
-    ) *extra_allocation.Node {
+    pub fn create(allocator: Allocator, comptime data_tag: extra_allocation.DataTag, data: DataType(data_tag)) *extra_allocation.Node {
         const ExtraAllocation = extra_allocation.Type(data_tag);
         const extra_alloc = try allocator.create(ExtraAllocation);
         extra_alloc.data = data;
@@ -233,13 +227,12 @@ fn consumeExtraAllocations(state: *State) Allocator.Error!void {
             .effect => {
                 const full: *extra_allocation.Type(.effect) = @fieldParentPtr("node", node);
                 try state.effects.append(state.allocator, full.data);
-            }
+            },
         }
     }
     // we don't need to do anything else since all the memory we just
     // traversed is inside our arena which we will reset soon.
 }
-
 
 pub const Scaling = struct {
     hp: f64 = 1.0,
@@ -291,7 +284,6 @@ fn scaleCash(state: *State) void {
     state.scaling.cash = abs;
 }
 
-
 pub const Difficulty = enum {
     easy,
     normal,
@@ -304,8 +296,6 @@ pub const Mode = enum {
     chimps,
 };
 
-
-
 pub const SpawnApeOptions = struct {
     upgrades: Ape.Mutable.Upgrades = .{},
     vtable: *Ape.Mutable.VTable = Ape.Mutable.vtable_passive,
@@ -316,12 +306,7 @@ pub fn spawnApe(
     position: raylib.Vector2,
     kind: Ape.Kind,
     options: SpawnApeOptions,
-) Ape {
-
-}
-
-
-
+) Ape {}
 
 pub const SpawnGoonOptions = struct {
     color: Goon.attributes.Mutable.Color = .none,
@@ -359,7 +344,6 @@ pub fn spawnGoon(
     return Goon{ .id = id };
 }
 
-
 pub fn create2(allocator: Allocator, map: *Map, difficulty: Difficulty, mode: Mode) Allocator.Error!*State {
     const state = try allocator.create(State);
     errdefer allocator.destroy(state);
@@ -394,7 +378,6 @@ pub fn destroy(state: *State) void {
     state.* = undefined;
 }
 
-
 pub fn updateGoonBlock2(state: *State, block: *Goon.Block) void {
     const batch_size = simd.suggestVectorLength(f64) orelse 1;
     const VecF64 = @Vector(batch_size, f64);
@@ -406,10 +389,7 @@ pub fn updateGoonBlock2(state: *State, block: *Goon.Block) void {
         if (batch_size > 1) {
             const slice = block.mutable_attr_list.slice();
             const vec: VecF64 = slice.items(.hp)[i..][0..batch_size];
-
-        } else {
-
-        }
+        } else {}
     }
 }
 
@@ -431,15 +411,9 @@ pub fn updateGoonBlock(task: *Task) void {
     const ctx: *TaskCtx = @fieldParentPtr("task", task);
 }
 
-pub fn updateScreenDims(state: *State, screen_width: u32, screen_height: u32) void {
+pub fn updateScreenDims(state: *State, screen_width: u32, screen_height: u32) void {}
 
-}
-
-pub fn run(state: *State) !void {
-
-}
-
-
+pub fn run(state: *State) !void {}
 
 // REIHENFOLGE
 // liste von möglichen statuseffekten führen
@@ -466,7 +440,6 @@ pub fn run(state: *State) !void {
 // rundenstart -> projektilpositionen/aoe updaten
 // geupdatete projektilpositionen/aoe (nach collisions checken, effekte updaten) -> mutable updaten
 // geupdatete mutables -> rendern
-
 
 // MEMORY LAYOUT
 // heap:

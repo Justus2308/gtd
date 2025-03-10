@@ -66,7 +66,9 @@ const Parsed = struct {
 
 pub const ParseError = std.fs.File.OpenError || std.fs.File.ReadError || Allocator.Error || error{ Malformed, Unsupported, StreamTooLong };
 
-pub fn parse(allocator: Allocator, path: [:0]const u8) []Obj {
+pub fn parse(allocator: Allocator, file: std.fs.File) []Obj {
+    @setFloatMode(.strict); // preserve NaN floats
+
     var objs = std.StringHashMapUnmanaged(Parsed).empty;
     defer objs.deinit(allocator);
     errdefer {
@@ -76,8 +78,7 @@ pub fn parse(allocator: Allocator, path: [:0]const u8) []Obj {
         }
     }
 
-    const f = try std.fs.openFileAbsoluteZ(path, .{ .mode = .read_only, .lock = .exclusive });
-    var buffered_reader = std.io.bufferedReader(f.reader());
+    var buffered_reader = std.io.bufferedReader(file.reader());
     const r = buffered_reader.reader();
 
     var prefix_buf: [6]u8 = undefined;
@@ -179,22 +180,19 @@ pub fn parse(allocator: Allocator, path: [:0]const u8) []Obj {
 
                 var i: usize = 0;
                 while (split.next()) |raw| : (i += 1) {
-                    if (i == 3) {
-                        return ParseError.Malformed;
-                    }
                     var vals = mem.splitScalar(u8, raw, '/');
                     const position_idx = if (vals.next()) |val|
                         std.fmt.parseInt(u32, val, 10) catch return ParseError.Malformed
                     else
                         return ParseError.Malformed;
-                    const uv_idx = if (vals.next()) |val|
+                    const uv_idx: ?u32 = if (vals.next()) |val|
                         std.fmt.parseInt(u32, val, 10) catch return ParseError.Malformed
                     else
-                        return ParseError.Unsupported;
-                    const normal_idx = if (vals.next()) |val|
+                        null;
+                    const normal_idx: ?u32 = if (vals.next()) |val|
                         std.fmt.parseInt(u32, val, 10) catch return ParseError.Malformed
                     else
-                        return ParseError.Unsupported;
+                        null;
                     if (vals.peek() != null) {
                         return ParseError.Malformed;
                     }
@@ -220,6 +218,7 @@ pub fn parse(allocator: Allocator, path: [:0]const u8) []Obj {
                     };
                     try p.indices.append(allocator, vertex_idx);
                 }
+                if (i != 3) return ParseError.Malformed;
             },
             else => return ParseError.Malformed,
         }
@@ -234,6 +233,7 @@ pub fn parse(allocator: Allocator, path: [:0]const u8) []Obj {
         obj.deinit(allocator);
     };
     while (iter.next()) |p| : (i += 1) {
+        assert(p.indices.len % 3 == 0);
         res[i] = try p.toObj(allocator);
     }
     assert(i == res.len);
@@ -257,6 +257,7 @@ const std = @import("std");
 const geo = @import("geo");
 
 const mem = std.mem;
+const testing = std.testing;
 
 const Allocator = mem.Allocator;
 
@@ -267,3 +268,51 @@ const vec3 = geo.linalg.v3f32;
 const Vec3 = vec3.V;
 
 const assert = std.debug.assert;
+
+// tests
+
+fn testPrintObj(obj: Obj) void {
+    assert(@import("builtin").is_test);
+    std.debug.print("name={s}\n", .{obj.name});
+    std.debug.print("vertices:\n", .{});
+    for (0..obj.vertices.len) |i| {
+        const vertex = obj.vertices.get(i);
+        std.debug.print("{any}\n", .{vertex});
+    }
+    std.debug.print("indices:\n", .{});
+    var i: usize = 0;
+    while (i < obj.indices.len) : (i += 3) {
+        std.debug.print("{d}, {d}, {d}\n", .{
+            obj.indices[i + 0],
+            obj.indices[i + 1],
+            obj.indices[i + 2],
+        });
+    }
+    assert(i == obj.indices.len);
+    std.debug.print("----------------------------\n", .{});
+}
+
+test parse {
+    const cwd = std.fs.cwd();
+    const obj_dir = cwd.openDir("test/obj", .{ .iterate = true }) catch
+        return error.SkipZigTest;
+
+    std.debug.print("===== parse .obj files =====\n", .{});
+
+    var iter = obj_dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind == .file and mem.endsWith(u8, entry.name, ".obj")) {
+            const obj_file = try obj_dir.openFile(entry.name, .{ .mode = .read_only, .lock = .exclusive });
+            defer obj_file.close();
+
+            std.debug.print("----- parse {s}:", .{entry.name});
+
+            const objs = Obj.parse(testing.allocator, obj_file);
+            for (objs) |obj| {
+                testPrintObj(obj);
+                obj.deinit(testing.allocator);
+            }
+        }
+    }
+    std.debug.print("============================\n", .{});
+}

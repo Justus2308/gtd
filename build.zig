@@ -31,6 +31,8 @@ pub fn build(b: *std.Build) void {
         else => @panic("unsupported target OS"),
     }
 
+    const asset_path_abs = b.option([]const u8, "asset-path", "Absolute path to the game asset directory");
+
     const shader_lang_hint = b.option(ShaderLanguage, "slang", "Use a custom shader language if possible") orelse .auto;
     const sokol_backend_hint: sokol_bld.SokolBackend = switch (shader_lang_hint) {
         .glsl410, .glsl430 => .gl,
@@ -38,6 +40,9 @@ pub fn build(b: *std.Build) void {
         .wgsl => if (sokol_bld.isPlatform(target.result, .web)) .wgpu else .auto,
         else => .auto,
     };
+
+    const runtime_options = b.addOptions();
+    runtime_options.addOption(?[]const u8, "asset_path", asset_path_abs);
 
     // Configure dependencies
     const stb_dep = b.dependency("stb", .{});
@@ -133,6 +138,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &internal_imports,
     });
+    exe_mod.addOptions("options", runtime_options);
     exe_mod.addImport("stbi", stbi_mod);
     exe_mod.addImport("sokol", sokol_mod);
     exe_mod.addImport("shader", shader_mod);

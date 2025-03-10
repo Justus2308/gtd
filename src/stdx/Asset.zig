@@ -4,8 +4,6 @@ path: Path,
 
 const Asset = @This();
 
-pub const sprite_width = 128; // TODO
-
 pub const Name = []const u8;
 pub const Id = u32;
 
@@ -48,14 +46,23 @@ const log = std.log.scoped(.assets);
 // TODO: split assets into separate arrays for each category?
 
 pub const Manager = struct {
-    name_to_id: std.StringHashMapUnmanaged(Asset.Id) = .empty,
-    id_to_index: std.AutoHashMapUnmanaged(Asset.Id, u32) = .empty,
-    assets: std.ArrayListUnmanaged(Asset.Cached) = .empty,
+    name_to_id: std.StringHashMapUnmanaged(Asset.Id),
+    id_to_index: std.AutoHashMapUnmanaged(Asset.Id, u32),
+    assets: std.ArrayListUnmanaged(Asset.Cached),
 
-    next_id: Asset.Id = 0,
-    lock: std.Thread.RwLock = .{},
+    next_id: Asset.Id,
+    lock: std.Thread.RwLock,
 
-    pub const Error = error{Stbi} || Allocator.Error;
+    pub const Error = Asset.Cached.Texture.Error || Allocator.Error;
+
+    pub const init = Manager{
+        .name_to_id = .empty,
+        .id_to_index = .empty,
+        .assets = .empty,
+
+        .next_id = 0,
+        .lock = .{},
+    };
 
     pub fn deinit(m: *Manager, allocator: Allocator) void {
         m.name_to_id.deinit(allocator);
@@ -241,6 +248,8 @@ const Cached = union(enum) {
         sprite_count: u16,
         data: []u8,
 
+        pub const sprite_width = 128;
+
         pub const Kind = enum { plain, sprite };
         pub const Error = error{Stbi};
 
@@ -256,7 +265,7 @@ const Cached = union(enum) {
             };
             const sprite_count: u16 = switch (kind_) {
                 .plain => 0,
-                .sprite => @intCast(@divExact(width, Asset.sprite_width)),
+                .sprite => @intCast(@divExact(width, Texture.sprite_width)),
             };
             const data = data_raw[0..(width * height * channels)];
             return Asset.Cached.Texture{
