@@ -13,7 +13,9 @@ Code speaks for itself
 
 ### Requirements:
 - [Zig 0.14.0](https://ziglang.org/download)
-- libc
+- libc*
+
+\*for targets that are not on [this list](https://ziglang.org/learn/overview/#zig-ships-with-libc)
 
 ### Build:
 ```
@@ -45,3 +47,16 @@ zig build uninstall
 If you've supplied a custom `data-path` to `zig build` you will have to supply it here again.
 
 [This might not totally work yet](https://github.com/ziglang/zig/issues/14943).
+
+### Supported Build Hosts:
+- Linux (x86-64/aarch64)
+- macOS (x86-64/aarch64)
+- Windows (x86-64)
+
+### Supported Targets:
+- Linux (x86-64/aarch64)
+- macOS (x86-64/aarch64)
+- Windows (x86-64/aarch64)
+- iOS (aarch64)
+- Emscripten (wasm64)
+- *soon&#8482;:* Android (aarch64)

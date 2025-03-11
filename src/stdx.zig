@@ -10,7 +10,6 @@ const cache_line = std.atomic.cache_line;
 pub const Asset = @import("stdx/Asset.zig");
 pub const ThreadPool = @import("stdx/ThreadPool.zig");
 pub const integrate = @import("stdx/integrate.zig");
-pub const Obj = @import("stdx/Obj.zig");
 pub const simd = @import("stdx/simd.zig");
 pub const StaticMultiArrayList = @import("stdx/static_multi_array_list.zig").StaticMultiArrayList;
 

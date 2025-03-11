@@ -31,8 +31,11 @@ pub fn getPathRel(asset: Asset, allocator: Allocator) Allocator.Error![]const u8
 
 const std = @import("std");
 const stdx = @import("stdx");
+const geo = @import("geo");
 const global = @import("global");
 const stbi = @import("stbi");
+const ufbx = @import("ufbx");
+const linalg = geo.linalg;
 const Allocator = std.mem.Allocator;
 const File = std.fs.File;
 const assert = std.debug.assert;
@@ -42,8 +45,8 @@ const log = std.log.scoped(.assets);
 
 /// Manages loading and caching assets from disk and lets multiple consumers
 /// share cached assets safely among multiple threads.
-/// Handles and references to locations created by this manager are stable
-/// and remain valid until it is deinitialized.
+/// Asset handles created by this manager are stable and remain valid until
+/// it is deinitialized.
 pub const Manager = struct {
     name_to_handle: std.StringHashMapUnmanaged(Asset.Handle),
     handle_to_location: std.AutoHashMapUnmanaged(Asset.Handle, Location),
@@ -146,14 +149,17 @@ pub const Manager = struct {
         const idx = location.index.value() orelse idx: {
             // This is the slow path anyway because we have to read from disk
             // so a couple more locking operations and double checks won't hurt
+            @branchHint(.cold);
             m.lock.unlockShared();
             m.lock.lock();
             defer {
                 m.lock.unlock();
                 m.lock.lockShared();
             }
-            const idx = location.index.value() orelse
-                m.cacheAsset(allocator, handle, location);
+            const idx = location.index.value() orelse blk: {
+                @branchHint(.likely);
+                break :blk m.cacheAsset(allocator, handle, location);
+            };
             break :idx idx;
         };
         return switch (m.cache.items[idx]) {
@@ -171,6 +177,7 @@ pub const Manager = struct {
                 break :cached cached;
             },
             else => |cached| blk: {
+                @branchHint(.likely);
                 location.addReference();
                 break :blk cached;
             },
@@ -264,11 +271,13 @@ pub const Manager = struct {
 
     inline fn loadInner(m: *Manager, allocator: Allocator, asset: Asset) Error!*Location {
         const handle = m.name_to_handle.get(asset.name) orelse handle: {
+            @branchHint(.unlikely);
             const handle = m.nextHandle();
             try m.name_to_handle.putNoClobber(allocator, asset.name, handle);
             break :handle handle;
         };
         const location = m.handle_to_location.getPtr(handle) orelse location: {
+            @branchHint(.unlikely);
             const location = Location{
                 .index = .none,
                 .ref_count = .init(0),
@@ -294,6 +303,7 @@ pub const Manager = struct {
 
         const location = m.handle_to_location.getPtr(handle) orelse return;
         if (location.isReferenced()) {
+            @branchHint(.unlikely);
             return false;
         }
         m.uncacheAsset(allocator, location);
@@ -482,21 +492,62 @@ const Cached = union(enum) {
     const Model = struct {
         objs: []stdx.Obj,
 
-        pub const Error = stdx.Obj.ParseError;
+        pub const Error = error{Ufbx};
 
-        pub fn load(allocator: Allocator, file: File) Error!Model {
+        pub fn load2(allocator: Allocator, file: File) Error!Model {
             const objs = try stdx.Obj.parse(allocator, file);
             return Model{ .objs = objs };
         }
 
-        pub fn unload(model: *Model, allocator: Allocator) void {
+        pub fn unload2(model: *Model, allocator: Allocator) void {
             for (model.objs) |*obj| {
                 obj.deinit(allocator);
             }
             allocator.free(model.objs);
             model.* = undefined;
         }
+
+        pub fn load(file: *File) Error!Model {
+            const stream = ufbx.ufbx_stream{
+                .read_fn = &wrappedRead,
+                .skip_fn = &wrappedSkip,
+                .size_fn = &wrappedSize,
+                .close_fn = null,
+                .user = @ptrCast(file),
+            };
+            var err: ufbx.ufbx_error = undefined;
+            const scene: *ufbx.ufbx_scene = ufbx.ufbx_load_stream(&stream, null, &err) orelse {
+                var err_buf: [ufbx.UFBX_ERROR_INFO_LENGTH]u8 = undefined;
+                const err_len = ufbx.ufbx_format_error(&err_buf, err_buf.len, &err);
+                const err_desc = err_buf[0..err_len];
+                std.log.scoped(.ufbx).err("model load failed: {s}", .{err_desc});
+                return Error.Ufbx;
+            };
+            // TODO
+        }
+        pub fn unload(model: *Model) void {}
+
+        fn wrappedRead(user: *anyopaque, data: *anyopaque, size: usize) callconv(.c) usize {
+            const f: *const File = @ptrCast(user);
+            const buffer = @as([*]u8, @ptrCast(data))[0..size];
+            const bytes_read = f.readAll(buffer) catch std.math.maxInt(usize);
+            return bytes_read;
+        }
+        fn wrappedSkip(user: *anyopaque, size: usize) callconv(.c) bool {
+            const f: *const File = @ptrCast(user);
+            f.seekBy(@intCast(size)) catch return false;
+            return true;
+        }
+        fn wrappedSize(user: *anyopaque) callconv(.c) u64 {
+            const f: *const File = @ptrCast(user);
+            const size = f.getEndPos() catch std.math.maxInt(u64);
+            return size;
+        }
     };
 
-    const Map = struct {};
+    const Map = struct {
+        display_name: []const u8,
+        texture_name: []const u8,
+        control_points: []linalg.v2f32.V,
+    };
 };

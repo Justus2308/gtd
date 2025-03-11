@@ -17,6 +17,10 @@
             .url = "https://github.com/nothings/stb/archive/master.tar.gz",
             .hash = "N-V-__8AAAokTgCCkRqtrvPINtODP3xgOG7h7kb-_7bFR4X3",
         },
+        .ufbx = .{
+            .url = "https://github.com/ufbx/ufbx/archive/master.tar.gz",
+            .hash = "N-V-__8AAPcdWwNh8eASi-b1qWz0hxn6LdQ3b4j2zVr4c3m5",
+        },
     },
     .paths = .{
         "build.zig",

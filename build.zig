@@ -4,6 +4,9 @@ const sokol_bld = @import("sokol");
 
 const app_name = "GoonsTD";
 
+const host_os = builtin.os.tag;
+const host_arch = builtin.cpu.arch;
+
 const ShaderLanguage = enum {
     auto,
     glsl410,
@@ -22,16 +25,29 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    if (target.result.abi.isAndroid()) {
+    const target_os = target.result.os.tag;
+    const target_arch = target.result.cpu.arch;
+    const target_is_android = target.result.abi.isAndroid();
+    const target_is_mobile = (target_is_android or target_os == .ios or target_os == .emscripten);
+
+    const optimize_is_safe = (optimize == .Debug or optimize == .ReleaseSafe);
+
+    if (target_is_android) {
         @panic("TODO: support android");
     }
-    if (target.result.os.tag == .emscripten) {
+    if (target_os == .emscripten) {
         @panic("TODO: support web");
     }
-    switch (target.result.os.tag) {
+    switch (target_os) {
         .windows, .macos, .linux, .ios, .emscripten => {},
         else => @panic("unsupported target OS"),
     }
+    if (switch (target_arch) {
+        .x86_64 => (target_os != .linux and target_os != .macos and target_os != .windows),
+        .aarch64 => (target_os == .emscripten),
+        .wasm64 => (target_os != .emscripten),
+        else => true,
+    }) @panic("unsupported target");
 
     const data_path_abs: []const u8 = b.option([]const u8, "data-path", "Absolute path to the desired game data directory") orelse
         std.fs.getAppDataDir(b.allocator, "GoonsTD") catch @panic("Cannot find default application data directory");
@@ -59,7 +75,28 @@ pub fn build(b: *std.Build) void {
     const stbi_mod = stbi_tc.createModule();
     stbi_mod.addCSourceFile(.{
         .file = stbi_h_path,
-        .flags = &.{ "-DSTB_IMAGE_IMPLEMENTATION", "-DSTBI_ONLY_PNG" },
+        .flags = &.{
+            "-std=c11",
+            "-DSTB_IMAGE_IMPLEMENTATION",
+            "-DSTBI_ONLY_PNG",
+        },
+        .language = .c,
+    });
+
+    const ufbx_dep = b.dependency("ufbx", .{});
+    const ufbx_tc = b.addTranslateC(.{
+        .root_source_file = ufbx_dep.path("ufbx.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ufbx_tc.defineCMacro("UFBX_REAL_IS_FLOAT", null);
+    const ufbx_mod = ufbx_tc.createModule();
+    ufbx_mod.addCSourceFile(.{
+        .file = ufbx_dep.path("ufbx.c"),
+        .flags = &.{
+            "-std=c11",
+            "-DUFBX_NO_FORMAT_OBJ",
+        },
         .language = .c,
     });
 
@@ -74,16 +111,16 @@ pub fn build(b: *std.Build) void {
     const sokol_mod = sokol_dep.module("sokol");
 
     const sokol_tools_bin_dep = b.dependency("sokol_tools_bin", .{});
-    const sokol_shdc_bin_subpath = "bin/" ++ switch (builtin.os.tag) {
+    const sokol_shdc_bin_subpath = "bin/" ++ switch (host_os) {
         .linux => "linux",
         .macos => "osx",
         .windows => "win32",
         else => @compileError("unsupported host OS"),
-    } ++ switch (builtin.cpu.arch) {
+    } ++ switch (host_arch) {
         .x86_64 => "",
-        .aarch64 => if (builtin.os.tag == .windows) @compileError("unsupported host arch") else "_arm64",
+        .aarch64 => if (host_os == .windows) @compileError("unsupported host") else "_arm64",
         else => @compileError("unsupported host arch"),
-    } ++ "/sokol-shdc" ++ if (builtin.os.tag == .windows) ".exe" else "";
+    } ++ "/sokol-shdc" ++ if (host_os == .windows) ".exe" else "";
     const sokol_shdc_bin_path = sokol_tools_bin_dep.path(sokol_shdc_bin_subpath);
 
     // Compile shader
@@ -91,7 +128,7 @@ pub fn build(b: *std.Build) void {
     const shader_lang: ShaderLanguage = switch (sokol_backend) {
         .metal => switch (shader_lang_hint) {
             .metal_macos, .metal_ios, .metal_sim => |lang| lang,
-            else => if (target.result.os.tag == .macos) .metal_macos else .metal_ios,
+            else => if (target_os == .macos) .metal_macos else .metal_ios,
         },
         .d3d11 => switch (shader_lang_hint) {
             .hlsl4, .hlsl5 => |lang| lang,
@@ -112,15 +149,19 @@ pub fn build(b: *std.Build) void {
     const sokol_shdc_out = sokol_shdc_cmd.addPrefixedOutputFileArg("--output=", "shader.zig");
     sokol_shdc_cmd.addArgs(&.{ b.fmt("--slang={s}", .{@tagName(shader_lang)}), "--format=sokol_zig" });
 
-    const sokol_shdc_install_file = b.addInstallFile(sokol_shdc_out, b.pathJoin(&.{ "gen", @tagName(shader_lang), "shader.zig" }));
+    const sokol_shdc_install_file = b.addInstallFile(
+        sokol_shdc_out,
+        b.pathJoin(&.{ "gen", @tagName(shader_lang), "shader.zig" }),
+    );
 
     const sokol_shdc_step = b.step("sokol-shdc", "Compile shader to Zig code");
     sokol_shdc_step.dependOn(&sokol_shdc_cmd.step);
     sokol_shdc_step.dependOn(&sokol_shdc_install_file.step);
 
     // Install game data
-    const data_dir = try std.fs.openDirAbsolute(data_path_abs, .{});
-    defer data_dir.close();
+    // const data_dir = std.fs.openDirAbsolute(data_path_abs, .{}) catch
+    //     @panic("cannot open data directory");
+    // defer data_dir.close();
 
     // Declare modules and artifacts
     const internal_imports = [_]std.Build.Module.Import{
@@ -147,12 +188,16 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addOptions("options", runtime_options);
     exe_mod.addImport("stbi", stbi_mod);
+    exe_mod.addImport("ufbx", ufbx_mod);
     exe_mod.addImport("sokol", sokol_mod);
     exe_mod.addImport("shader", shader_mod);
 
     const exe = b.addExecutable(.{
         .name = app_name,
         .root_module = exe_mod,
+        .strip = ((optimize == .ReleaseSmall) or
+            (!optimize_is_safe and target_is_mobile)),
+        .single_threaded = false,
     });
 
     b.installArtifact(exe);
@@ -175,6 +220,7 @@ pub fn build(b: *std.Build) void {
         .imports = &internal_imports,
     });
     exe_unit_tests_mod.addImport("stbi", stbi_mod);
+    exe_unit_tests_mod.addImport("ufbx", ufbx_mod);
     exe_unit_tests_mod.addImport("sokol", sokol_mod);
     exe_unit_tests_mod.addImport("shader", shader_mod);
 
