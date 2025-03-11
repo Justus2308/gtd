@@ -66,7 +66,7 @@ const Parsed = struct {
 
 pub const ParseError = std.fs.File.OpenError || std.fs.File.ReadError || Allocator.Error || error{ Malformed, Unsupported, StreamTooLong };
 
-pub fn parse(allocator: Allocator, file: std.fs.File) []Obj {
+pub fn parse(allocator: Allocator, file: std.fs.File) ParseError![]Obj {
     @setFloatMode(.strict); // preserve NaN floats
 
     var objs = std.StringHashMapUnmanaged(Parsed).empty;

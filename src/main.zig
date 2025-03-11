@@ -54,7 +54,7 @@ fn sokolMain(argc: c_int, argv: [*][*]c_char) callconv(.c) sokol.app.Desc {
     return sokol_app_desc;
 }
 
-export fn sokolLog(
+fn sokolLog(
     tag: [*:0]const u8,
     log_level: u32,
     log_item_id: u32,
@@ -78,7 +78,7 @@ export fn sokolLog(
     }
 }
 
-export fn sokolInit() callconv(.c) void {
+fn sokolInit() callconv(.c) void {
     gfx.setup(.{
         .environment = sokol.glue.environment(),
         .logger = .{ .func = &sokolLog },
@@ -139,13 +139,13 @@ export fn sokolInit() callconv(.c) void {
     };
 }
 
-export fn sokolCleanup() callconv(.c) void {
+fn sokolCleanup() callconv(.c) void {
     gfx.shutdown();
     audio.shutdown();
     global.deinit();
 }
 
-export fn sokolFrame() callconv(.c) void {
+fn sokolFrame() callconv(.c) void {
     const frame_time: f32 = @floatCast(sokol.app.frameDuration());
 
     @memset(@as([]u8, @ptrCast(&draw_frame)), 0);
@@ -167,7 +167,7 @@ export fn sokolFrame() callconv(.c) void {
     gfx.commit();
 }
 
-export fn sokolEvent(event: *const sokol.app.Event) callconv(.c) void {
+fn sokolEvent(event: *const sokol.app.Event) callconv(.c) void {
     switch (event.type) {
         .KEY_DOWN, .KEY_UP => events.handleKeyboardEvent(event.*),
         .MOUSE_DOWN, .MOUSE_UP, .MOUSE_MOVE, .MOUSE_SCROLL, .MOUSE_ENTER, .MOUSE_LEAVE => events.handleMouseEvent(event.*),

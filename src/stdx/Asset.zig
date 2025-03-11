@@ -1,38 +1,32 @@
-ident: Ident,
+//! Use this to describe assets at comptime and `Handle`
+//! to reference them at runtime.
+
+name: []const u8,
 kind: Kind,
-path: Path,
 
 const Asset = @This();
 
-pub const Name = []const u8;
-pub const Id = u32;
+pub const Handle = u32;
 
-const Ident = union(enum) {
-    name: Name,
-    id: Id,
-};
-
-const Kind = enum {
-    @"texture/plain",
-    @"texture/sprite",
+pub const Kind = enum {
+    texture_plain,
+    texture_sprite,
     model,
     map,
 };
 
-const Path = union(enum) {
-    absolute: []const u8,
-    relative: []const u8,
-};
+pub fn init(name: []const u8, kind: Kind) Asset {
+    return .{ .name = name, .kind = kind };
+}
 
-pub fn resolvePath(asset: Asset, allocator: Allocator) Allocator.Error![:0]const u8 {
-    return switch (asset.path) {
-        .absolute => |absolute| try allocator.dupe(u8, absolute),
-        .relative => |relative| std.fs.path.joinZ(allocator, &.{
-            global.asset_path,
-            @tagName(asset.kind),
-            relative,
-        }) catch return Allocator.Error,
+pub fn getPathRel(asset: Asset, allocator: Allocator) Allocator.Error![]const u8 {
+    const sub_path = switch (asset.kind) {
+        .texture_plain => "texture/plain",
+        .texture_sprite => "texture/sprite",
+        .model => "model",
+        .map => "map",
     };
+    return std.fs.path.join(allocator, &.{ sub_path, asset.name });
 }
 
 const std = @import("std");
@@ -40,197 +34,368 @@ const stdx = @import("stdx");
 const global = @import("global");
 const stbi = @import("stbi");
 const Allocator = std.mem.Allocator;
+const File = std.fs.File;
 const assert = std.debug.assert;
 const log = std.log.scoped(.assets);
 
 // TODO: split assets into separate arrays for each category?
 
+/// Manages loading and caching assets from disk and lets multiple consumers
+/// share cached assets safely among multiple threads.
+/// Handles and references to locations created by this manager are stable
+/// and remain valid until it is deinitialized.
 pub const Manager = struct {
-    name_to_id: std.StringHashMapUnmanaged(Asset.Id),
-    id_to_index: std.AutoHashMapUnmanaged(Asset.Id, u32),
-    assets: std.ArrayListUnmanaged(Asset.Cached),
+    name_to_handle: std.StringHashMapUnmanaged(Asset.Handle),
+    handle_to_location: std.AutoHashMapUnmanaged(Asset.Handle, Location),
+    cache: std.ArrayListUnmanaged(Asset.Cached),
 
-    next_id: Asset.Id,
+    next_handle: Asset.Handle,
     lock: std.Thread.RwLock,
 
-    pub const Error = Asset.Cached.Texture.Error || Allocator.Error;
+    pub const Error = Allocator.Error ||
+        File.OpenError ||
+        Asset.Cached.Texture.Error ||
+        Asset.Cached.Model.Error ||
+        error{ UnknownAssetHandle, TooManyAttempts };
+
+    /// Locations are only destroyed at manager `deinit()`
+    /// so references to them remain valid once obtained.
+    const Location = struct {
+        index: Index,
+        ref_count: std.atomic.Value(u32),
+        path_rel: []const u8,
+        asset_kind: Asset.Kind,
+
+        pub const Index = enum(u32) {
+            none = std.math.maxInt(u32),
+            _,
+
+            pub inline fn at(value_: u32) Index {
+                assert(value_ != @intFromEnum(Index.none));
+                return @enumFromInt(value_);
+            }
+            pub inline fn value(index: Index) ?u32 {
+                return if (index == .none) null else @intFromEnum(index);
+            }
+        };
+
+        pub inline fn addReference(location: *Location) void {
+            // do not check for overflow if that happens it's so over
+            location.ref_count.fetchAdd(1, .acq_rel);
+        }
+        pub inline fn removeReference(location: *Location) void {
+            assert(location.isReferenced());
+            location.ref_count.fetchSub(1, .acq_rel);
+        }
+        pub inline fn isReferenced(location: *const Location) bool {
+            return (location.ref_count.load(.acquire) > 0);
+        }
+    };
 
     pub const init = Manager{
-        .name_to_id = .empty,
-        .id_to_index = .empty,
-        .assets = .empty,
+        .name_to_handle = .empty,
+        .handle_to_location = .empty,
+        .cache = .empty,
 
-        .next_id = 0,
+        .next_handle = 0,
         .lock = .{},
     };
 
+    /// Invalidated all assets. Asserts that no assets are referenced.
     pub fn deinit(m: *Manager, allocator: Allocator) void {
-        m.name_to_id.deinit(allocator);
-        m.id_to_index.deinit(allocator);
-        for (m.assets.items) |cached| {
+        m.name_to_handle.deinit(allocator);
+        var location_iter = m.handle_to_location.valueIterator();
+        while (location_iter.next()) |location| {
+            assert(!location.isReferenced());
+            allocator.free(location.path_rel);
+        }
+        m.handle_to_location.deinit(allocator);
+        for (m.cache.items) |cached| {
             switch (cached) {
                 .texture => |texture| texture.unload(),
-                .model => |model| model.deinit(allocator),
+                .model => |model| model.unload(allocator),
                 .map => @panic("TODO: implement"),
                 .tombstone => {},
             }
         }
-        m.assets.deinit(allocator);
+        m.cache.deinit(allocator);
         log.debug("asset manager deinitialized", .{});
         m.* = undefined;
     }
 
-    /// Tries to only lock manager exclusively when asset is not loaded yet.
+    /// Set to 0 for unlimited attempts
+    const max_get_attempts = 5;
+
+    /// Only locks manager exclusively when asset is not in cache anymore.
     /// This comes at the cost of more locking actions and double checks in
     /// case of a load.
-    pub fn get(m: *Manager, allocator: Allocator, asset: Asset) Error!Asset.Cached {
+    /// Adds a reference to the asset associated with `handle`.
+    pub fn get(m: *Manager, allocator: Allocator, handle: Handle) Error!Asset.Cached {
         m.lock.lockShared();
         defer m.lock.unlockShared();
-        const id = switch (asset.ident) {
-            .name => |name| m.name_to_id.get(name) orelse id: {
-                @branchHint(.unlikely);
-                m.lock.unlockShared();
-                m.lock.lock();
-                defer {
-                    m.lock.unlock();
-                    m.lock.lockShared();
-                }
-                // Double check, new entry could have been
-                // inserted between unlockShared and lock
-                if (m.name_to_id.get(name)) |id| {
-                    @branchHint(.cold);
-                    break :id id;
-                }
-                const next = m.nextId();
-                try m.name_to_id.putNoClobber(allocator, name, next);
-                break :id next;
-            },
-            .id => |id| id,
-        };
-        const index = m.id_to_index.get(id) orelse index: {
-            @branchHint(.unlikely);
+        try m.getInner(allocator, handle, 0);
+    }
+    fn getInner(
+        m: *Manager,
+        allocator: Allocator,
+        handle: Asset.Handle,
+        attempt: isize,
+    ) Error!Asset.Cached {
+        const location = m.handle_to_location.getPtr(handle) orelse
+            return Error.UnknownAssetHandle;
+        const idx = location.index.value() orelse idx: {
+            // This is the slow path anyway because we have to read from disk
+            // so a couple more locking operations and double checks won't hurt
             m.lock.unlockShared();
             m.lock.lock();
             defer {
                 m.lock.unlock();
                 m.lock.lockShared();
             }
-            if (m.id_to_index.get(id)) |index| {
-                @branchHint(.cold);
-                break :index index;
-            }
-            break :index try m.cacheAsset(allocator, asset, id);
+            const idx = location.index.value() orelse
+                m.cacheAsset(allocator, handle, location);
+            break :idx idx;
         };
-        return m.assets.items[index];
+        return switch (m.cache.items[idx]) {
+            .tombstone => cached: {
+                // Another thread unloaded our asset while we weren't looking
+                @branchHint(.cold);
+                if (attempt == (max_get_attempts - 1)) {
+                    return Error.TooManyAttempts;
+                }
+                const cached = try @call(
+                    .always_tail,
+                    getInner,
+                    .{ m, allocator, handle, (attempt + 1) },
+                );
+                break :cached cached;
+            },
+            else => |cached| blk: {
+                location.addReference();
+                break :blk cached;
+            },
+        };
     }
 
     /// Guaranteed to succeed and never lock exclusively.
     /// This function will never modify the asset cache.
-    pub fn getIfLoaded(m: *Manager, asset: Asset) ?Asset.Cached {
+    /// Adds a reference to the asset associated with `handle`.
+    pub fn getIfCached(m: *Manager, handle: Handle) ?Asset.Cached {
         m.lock.lockShared();
         defer m.lock.unlockShared();
 
-        const id = switch (asset.ident) {
-            .name => |name| m.name_to_id.get(name) orelse return null,
-            .id => |id| id,
-        };
-        const index = m.id_to_index.get(id) orelse return null;
-        return m.assets.items[index];
+        const location = m.handle_to_location.getPtr(handle) orelse return null;
+        const idx = location.index.value() orelse return null;
+        location.addReference();
+        return m.cache.items[idx];
     }
 
-    /// Locks manager exclusively right away ; faster than `get` if
-    /// you know that an asset is not loaded yet.
+    /// Does not add a reference to the asset associated with the handle.
+    pub fn getHandle(m: *Manager, allocator: Allocator, asset: Asset) Error!Handle {
+        m.lock.lockShared();
+        defer m.lock.unlockShared();
+
+        const handle = m.name_to_handle.get(asset.name) orelse handle: {
+            m.lock.unlockShared();
+            m.lock.lock();
+            defer {
+                m.lock.unlock();
+                m.lock.lockShared();
+            }
+            // Double check, new entry could have been
+            // inserted between unlockShared and lock
+            if (m.name_to_handle.get(asset.name)) |handle| {
+                @branchHint(.cold);
+                return handle;
+            }
+            const handle = m.nextHandle();
+            try m.name_to_handle.putNoClobber(allocator, asset.name, handle);
+            break :handle handle;
+        };
+        return handle;
+    }
+
+    /// Call after `get()` to signal that you don't need the asset any longer.
+    /// Removes a reference to the asset associated with `handle`.
+    pub fn unget(m: *Manager, handle: Handle) void {
+        m.lock.lockShared();
+        defer m.lock.unlockShared();
+
+        const location = m.handle_to_location.getPtr(handle) orelse return;
+
+        assert(location.isReferenced());
+        location.removeReference();
+    }
+
+    /// Possibly invalidates all references to this asset. Use with care.
+    pub fn ungetAll(m: *Manager, handle: Handle) void {
+        m.lock.lock();
+        defer m.lock.unlock();
+
+        const location = m.handle_to_location.getPtr(handle) orelse return;
+
+        if (location.isReferenced()) {
+            log.warn("ungetAll() called on referenced asset {s}:{d}: {d} references left", .{
+                location.path_rel,
+                handle,
+                location.ref_count.load(.unordered),
+            });
+        }
+        location.ref_count.store(0, .unordered);
+    }
+
+    /// Locks manager exclusively.
+    /// Does not add a reference to the asset associated with the handle.
     pub fn load(m: *Manager, allocator: Allocator, asset: Asset) Error!void {
         m.lock.lock();
         defer m.lock.unlock();
-
-        const id = switch (asset.ident) {
-            .name => |name| m.name_to_id.get(name) orelse id: {
-                const next = m.nextId();
-                try m.name_to_id.putNoClobber(allocator, name, next);
-                break :id next;
-            },
-            .id => |id| id,
-        };
-        if (!m.id_to_index.contains(id)) {
-            _ = try m.cacheAsset(allocator, asset, id);
-        }
+        _ = try m.loadInner(allocator, asset);
     }
 
-    /// Locks manager exclusively ; invalidates all references to the cached asset.
-    pub fn unload(m: *Manager, allocator: Allocator, asset: Asset) void {
+    /// Locks manager exclusively.
+    /// Adds a reference to the asset associated with `handle`.
+    pub fn loadAndGet(m: *Manager, allocator: Allocator, asset: Asset) Error!Asset.Cached {
+        m.lock();
+        defer m.lock.unlock();
+        const location = try m.loadInner(allocator, asset);
+        location.addReference();
+        return m.cache.items[location.index.value().?];
+    }
+
+    inline fn loadInner(m: *Manager, allocator: Allocator, asset: Asset) Error!*Location {
+        const handle = m.name_to_handle.get(asset.name) orelse handle: {
+            const handle = m.nextHandle();
+            try m.name_to_handle.putNoClobber(allocator, asset.name, handle);
+            break :handle handle;
+        };
+        const location = m.handle_to_location.getPtr(handle) orelse location: {
+            const location = Location{
+                .index = .none,
+                .ref_count = .init(0),
+                .path_rel = try asset.getPathRel(allocator),
+                .asset_kind = asset.kind,
+            };
+            try m.handle_to_location.putNoClobber(allocator, handle, location);
+            break :location m.handle_to_location.getPtr(handle).?;
+        };
+        if (location.index == .none) {
+            const idx = try m.cacheAsset(allocator, location);
+            location.index = .at(idx);
+        }
+        return location;
+    }
+
+    /// Locks manager exclusively ; invalidates all references to the cached asset on success.
+    /// Returns `true` on success and `false` if the asset associated with `handle`
+    /// is still referenced and thus cannot be unloaded yet.
+    pub fn unload(m: *Manager, allocator: Allocator, handle: Handle) bool {
         m.lock.lock();
         defer m.lock.unlock();
 
-        const id = switch (asset.ident) {
-            .name => |name| m.name_to_id.get(name) orelse return,
-            .id => |id| id,
-        };
-        const id_idx = m.id_to_index.fetchRemove(id) orelse return;
-        const index = id_idx.value;
-        const cached = &m.assets.items[index];
-        switch (cached.*) {
-            .texture => |texture| texture.unload(),
-            .model => |model| model.deinit(allocator),
-            .map => @panic("TODO: implement"),
-            .tombstone => unreachable,
+        const location = m.handle_to_location.getPtr(handle) orelse return;
+        if (location.isReferenced()) {
+            return false;
         }
-        log.info("unloaded asset {s}:{d}:{s} at index {d}", .{
-            if (std.meta.activeTag(asset.ident) == .name) asset.ident.name else "?",
-            id,
-            @tagName(cached.*),
-            index,
-        });
-        cached.* = .tombstone;
+        m.uncacheAsset(allocator, location);
+        return true;
+    }
+
+    /// Unload all cached assets that aren't referenced by anything.
+    /// Consolidated cache array.
+    pub fn unloadAll(m: *Manager, allocator: Allocator) void {
+        m.lock.lock();
+        defer m.lock.unlock();
+
+        const location_iter = m.handle_to_location.valueIterator();
+        while (location_iter.next()) |location| {
+            if (!location.isReferenced()) {
+                m.uncacheAsset(allocator, location);
+            }
+        }
+        const used_len = std.mem.trimRight(Asset.Cached, m.cache.items, &.{.tombstone}).len;
+        m.cache.shrinkRetainingCapacity(used_len);
     }
 
     /// Asserts that asset is not in cache yet.
     /// Assumes that an exclusive lock is held.
-    inline fn cacheAsset(m: *Manager, allocator: Allocator, asset: Asset, id: Asset.Id) Error!u32 {
-        assert(!m.id_to_index.contains(id));
+    inline fn cacheAsset(
+        m: *Manager,
+        allocator: Allocator,
+        location: *Location,
+    ) Error!u32 {
+        assert(location.index == .none);
 
-        var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-        var path_allocator = std.heap.FixedBufferAllocator.init(&path_buffer);
-        const path = try asset.resolvePath(path_allocator.allocator());
-        const cached: Asset.Cached = switch (asset.kind) {
-            .@"texture/plain" => .{ .texture = .load(path, .plain) },
-            .@"texture/sprite" => .{ .texture = .load(path, .sprite) },
-            .model, .map => @panic("TODO: implement"),
+        const file = try global.asset_dir.openFile(location.path_rel, .{
+            .mode = .read_only,
+            .lock = .exclusive,
+        });
+        defer file.close();
+
+        const cached: Asset.Cached = switch (location.asset_kind) {
+            .texture_plain => .{ .texture = .load(file, .plain) },
+            .texture_sprite => .{ .texture = .load(file, .sprite) },
+            .model => .{ .model = .load(allocator, file) },
+            .map => @panic("TODO: implement"),
         };
         errdefer switch (cached) {
             .texture => |texture| texture.unload(),
-            .model => |model| model.deinit(allocator),
+            .model => |model| model.unload(allocator),
             .map => @panic("TODO: implement"),
             .tombstone => unreachable,
         };
-        const index = try m.nextIndex(allocator);
-        try m.id_to_index.putNoClobber(allocator, id, index);
-        m.assets.items[index] = cached;
-        log.info("cached asset {s}:{d}:{s} at index {d}", .{
-            if (std.meta.activeTag(asset.ident) == .name) asset.ident.name else "?",
-            id,
+        const idx = try m.nextIndex(allocator);
+        m.cache.items[idx] = cached;
+        location.index = .at(idx);
+        log.info("cached asset {s}:{s} at index {d}", .{
+            location.path_rel,
             @tagName(cached.*),
-            index,
+            idx,
         });
-        return index;
+        return idx;
+    }
+
+    /// Asserts that asset is not referenced.
+    /// Assumes that an exclusive lock is held.
+    inline fn uncacheAsset(
+        m: *Manager,
+        allocator: Allocator,
+        location: *Location,
+    ) void {
+        assert(!location.isReferenced());
+
+        const idx = location.index.value() orelse return;
+        const cached = &m.cache.items[idx];
+        switch (cached.*) {
+            .texture => |texture| texture.unload(),
+            .model => |model| model.unload(allocator),
+            .map => @panic("TODO: implement"),
+            .tombstone => unreachable,
+        }
+        log.info("uncached asset {s}:{s} at index {d}", .{
+            location.path_rel,
+            @tagName(cached.*),
+            idx,
+        });
+        location.index = .none;
+        cached.* = .tombstone;
     }
 
     /// Assumes that an exclusive lock is held.
-    inline fn nextId(m: *Manager) Asset.Id {
-        const id = m.next_id;
-        m.next_id += 1;
-        return id;
+    inline fn nextHandle(m: *Manager) Asset.Handle {
+        const handle = m.next_handle;
+        m.next_handle += 1;
+        return handle;
     }
     /// Assumes that an exclusive lock is held.
     inline fn nextIndex(m: *Manager, allocator: Allocator) Error!u32 {
-        for (m.assets.items, 0..) |cached, i| {
+        for (m.cache.items, 0..) |cached, i| {
             if (cached == .tombstone) {
                 @branchHint(.unlikely);
                 return @intCast(i);
             }
         } else {
-            try m.assets.append(allocator, .tombstone);
-            return @intCast(m.assets.items.len - 1);
+            try m.cache.append(allocator, .tombstone);
+            return @intCast(m.cache.items.len - 1);
         }
     }
 };
@@ -253,12 +418,18 @@ const Cached = union(enum) {
         pub const Kind = enum { plain, sprite };
         pub const Error = error{Stbi};
 
-        pub fn load(path: [:0]const u8, kind_: Texture.Kind) Error!Texture {
+        pub fn load(file: File, kind_: Texture.Kind) Error!Texture {
             var width: c_int, var height: c_int, var channels: c_int = undefined;
-            const data_raw: [*]u8 = stbi.stbi_load(path, &width, &height, &channels, 0) orelse {
+            const data_raw: [*]u8 = stbi.stbi_load_from_callbacks(
+                &Texture.io_callbacks,
+                &file,
+                &width,
+                &height,
+                &channels,
+                0,
+            ) orelse {
                 @branchHint(.cold);
-                std.log.scoped(.stbi).err("image load failed at {s}: {s}", .{
-                    path,
+                std.log.scoped(.stbi).err("image load failed: {s}", .{
                     stbi.stbi_failure_reason() orelse "no reason provided",
                 });
                 return Error.Stbi;
@@ -268,7 +439,7 @@ const Cached = union(enum) {
                 .sprite => @intCast(@divExact(width, Texture.sprite_width)),
             };
             const data = data_raw[0..(width * height * channels)];
-            return Asset.Cached.Texture{
+            return Texture{
                 .width = @intCast(width),
                 .height = @intCast(height),
                 .channels = @intCast(channels),
@@ -284,34 +455,48 @@ const Cached = union(enum) {
         pub inline fn kind(texture: Texture) Texture.Kind {
             return if (texture.sprite_count > 0) .sprite else .plain;
         }
+
+        const io_callbacks = stbi.stbi_io_callbacks{
+            .read = &wrappedRead,
+            .skip = &wrappedSkip,
+            .eof = &wrappedEof,
+        };
+        fn wrappedRead(user: *anyopaque, data: [*]u8, size: c_int) callconv(.c) c_int {
+            const f: *const File = @ptrCast(user);
+            const buffer = data[0..@as(usize, @intCast(size))];
+            const bytes_read = f.readAll(buffer) catch 0;
+            return @intCast(bytes_read);
+        }
+        fn wrappedSkip(user: *anyopaque, n: c_int) callconv(.c) void {
+            const f: *const File = @ptrCast(user);
+            f.seekBy(n) catch {};
+        }
+        fn wrappedEof(user: *anyopaque) callconv(.c) c_int {
+            const f: *const File = @ptrCast(user);
+            const pos = f.getPos() catch 0;
+            const end_pos = f.getEndPos() catch 0;
+            return @intFromBool(pos == end_pos);
+        }
     };
 
     const Model = struct {
-        texture: Asset.Id,
-        vertices: stdx.Obj.Vertex.List.Slice,
-        indices: []u32,
+        objs: []stdx.Obj,
 
-        /// Invalidates obj
-        pub fn fromObj(allocator: Allocator, obj: *stdx.Obj, texture: Asset.Id) Model {
-            allocator.free(obj);
-            const vertices = obj.vertices;
-            const indices = obj.indices;
-            obj.* = undefined;
-            return Model{
-                .texture = texture,
-                .vertices = vertices,
-                .indices = indices,
-            };
+        pub const Error = stdx.Obj.ParseError;
+
+        pub fn load(allocator: Allocator, file: File) Error!Model {
+            const objs = try stdx.Obj.parse(allocator, file);
+            return Model{ .objs = objs };
         }
 
-        pub fn deinit(model: *Model, allocator: Allocator) void {
-            model.vertices.deinit(allocator);
-            allocator.free(model.indices);
+        pub fn unload(model: *Model, allocator: Allocator) void {
+            for (model.objs) |*obj| {
+                obj.deinit(allocator);
+            }
+            allocator.free(model.objs);
             model.* = undefined;
         }
     };
 
-    const Map = struct {
-        texture: Asset.Id,
-    };
+    const Map = struct {};
 };

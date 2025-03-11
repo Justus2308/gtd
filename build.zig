@@ -2,6 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const sokol_bld = @import("sokol");
 
+const app_name = "GoonsTD";
+
 const ShaderLanguage = enum {
     auto,
     glsl410,
@@ -31,7 +33,8 @@ pub fn build(b: *std.Build) void {
         else => @panic("unsupported target OS"),
     }
 
-    const asset_path_abs = b.option([]const u8, "asset-path", "Absolute path to the game asset directory");
+    const data_path_abs: []const u8 = b.option([]const u8, "data-path", "Absolute path to the desired game data directory") orelse
+        std.fs.getAppDataDir(b.allocator, "GoonsTD") catch @panic("Cannot find default application data directory");
 
     const shader_lang_hint = b.option(ShaderLanguage, "slang", "Use a custom shader language if possible") orelse .auto;
     const sokol_backend_hint: sokol_bld.SokolBackend = switch (shader_lang_hint) {
@@ -42,7 +45,7 @@ pub fn build(b: *std.Build) void {
     };
 
     const runtime_options = b.addOptions();
-    runtime_options.addOption(?[]const u8, "asset_path", asset_path_abs);
+    runtime_options.addOption([]const u8, "data_path", data_path_abs);
 
     // Configure dependencies
     const stb_dep = b.dependency("stb", .{});
@@ -115,6 +118,10 @@ pub fn build(b: *std.Build) void {
     sokol_shdc_step.dependOn(&sokol_shdc_cmd.step);
     sokol_shdc_step.dependOn(&sokol_shdc_install_file.step);
 
+    // Install game data
+    const data_dir = try std.fs.openDirAbsolute(data_path_abs, .{});
+    defer data_dir.close();
+
     // Declare modules and artifacts
     const internal_imports = [_]std.Build.Module.Import{
         createImport(b, "entities", optimize, target),
@@ -144,7 +151,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("shader", shader_mod);
 
     const exe = b.addExecutable(.{
-        .name = "gtd",
+        .name = app_name,
         .root_module = exe_mod,
     });
 
