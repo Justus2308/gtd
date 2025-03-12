@@ -128,8 +128,12 @@ pub const Manager = struct {
         .lock = .{},
     };
 
-    /// Invalidated all assets. Asserts that no assets are referenced.
+    /// Invalidates all assets. Asserts that no assets are referenced.
     pub fn deinit(m: *Manager, allocator: Allocator) void {
+        var asset_iter = m.asset_to_handle.keyIterator();
+        while (asset_iter.next()) |asset| {
+            allocator.free(asset.name);
+        }
         m.asset_to_handle.deinit(allocator);
         var location_iter = m.handle_to_location.valueIterator();
         while (location_iter.next()) |location| {
@@ -140,7 +144,7 @@ pub const Manager = struct {
         for (m.cache.items) |cached| {
             switch (cached) {
                 .texture => |texture| texture.unload(),
-                .model => |model| model.unload(allocator),
+                .model => |model| model.unload(),
                 .map => @panic("TODO: implement"),
                 .tombstone => {},
             }
@@ -163,9 +167,7 @@ pub const Manager = struct {
             while (try iter.next()) |entry| {
                 if (entry.kind == .file) {
                     const asset = Asset.init(std.fs.path.stem(entry.name), kind);
-                    const handle = m.nextHandle();
-                    const prev = try m.asset_to_handle.fetchPut(allocator, asset, handle);
-                    assert(prev == null);
+                    try m.registerAsset(allocator, asset);
                 }
             }
         }
@@ -266,8 +268,7 @@ pub const Manager = struct {
                 @branchHint(.cold);
                 return handle;
             }
-            const handle = m.nextHandle();
-            try m.asset_to_handle.putNoClobber(allocator, asset, handle);
+            const handle = m.registerAsset(allocator, asset);
             break :handle handle;
         };
         return handle;
@@ -329,8 +330,7 @@ pub const Manager = struct {
     inline fn loadInner(m: *Manager, allocator: Allocator, asset: Asset) Error!*Location {
         const handle = m.asset_to_handle.get(asset) orelse handle: {
             @branchHint(.unlikely);
-            const handle = m.nextHandle();
-            try m.asset_to_handle.putNoClobber(allocator, asset, handle);
+            const handle = m.registerAsset(allocator, asset);
             break :handle handle;
         };
         const location = m.handle_to_location.getPtr(handle) orelse location: {
@@ -429,6 +429,19 @@ pub const Manager = struct {
         }
         const new_len = mem.trimRight(Cached, m.cache.items, &.{.tombstone}).len;
         m.cache.shrinkAndFree(allocator, new_len);
+    }
+
+    /// Assumes that an exclusive lock is held.
+    /// Duplicates `asset`.
+    inline fn registerAsset(m: *Manager, allocator: Allocator, asset: Asset) Error!Handle {
+        const handle = m.nextHandle();
+        const asset_name_duped = try allocator.dupe(u8, asset.name);
+        errdefer allocator.free(asset_name_duped);
+        const gop = try m.asset_to_handle.getOrPut(allocator, asset);
+        assert(!gop.found_existing);
+        gop.key_ptr.name = asset_name_duped;
+        gop.value_ptr.* = handle;
+        return handle;
     }
 
     /// Asserts that asset is not in cache yet.
