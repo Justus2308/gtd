@@ -83,19 +83,19 @@ pub fn build(b: *std.Build) void {
         .language = .c,
     });
 
-    const ufbx_dep = b.dependency("ufbx", .{});
-    const ufbx_tc = b.addTranslateC(.{
-        .root_source_file = ufbx_dep.path("ufbx.h"),
+    const cgltf_dep = b.dependency("cgltf", .{});
+    const cgltf_h_path = cgltf_dep.path("cgltf.h");
+    const cgltf_tc = b.addTranslateC(.{
+        .root_source_file = cgltf_h_path,
         .target = target,
         .optimize = optimize,
     });
-    ufbx_tc.defineCMacro("UFBX_REAL_IS_FLOAT", null);
-    const ufbx_mod = ufbx_tc.createModule();
-    ufbx_mod.addCSourceFile(.{
-        .file = ufbx_dep.path("ufbx.c"),
+    const cgltf_mod = cgltf_tc.createModule();
+    cgltf_mod.addCSourceFile(.{
+        .file = cgltf_h_path,
         .flags = &.{
             "-std=c11",
-            "-DUFBX_NO_FORMAT_OBJ",
+            "-DCGLTF_IMPLEMENTATION",
         },
         .language = .c,
     });
@@ -188,7 +188,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addOptions("options", runtime_options);
     exe_mod.addImport("stbi", stbi_mod);
-    exe_mod.addImport("ufbx", ufbx_mod);
+    exe_mod.addImport("cgltf", cgltf_mod);
     exe_mod.addImport("sokol", sokol_mod);
     exe_mod.addImport("shader", shader_mod);
 
@@ -220,7 +220,7 @@ pub fn build(b: *std.Build) void {
         .imports = &internal_imports,
     });
     exe_unit_tests_mod.addImport("stbi", stbi_mod);
-    exe_unit_tests_mod.addImport("ufbx", ufbx_mod);
+    exe_unit_tests_mod.addImport("cgltf", cgltf_mod);
     exe_unit_tests_mod.addImport("sokol", sokol_mod);
     exe_unit_tests_mod.addImport("shader", shader_mod);
 

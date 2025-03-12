@@ -34,7 +34,7 @@ const stdx = @import("stdx");
 const geo = @import("geo");
 const global = @import("global");
 const stbi = @import("stbi");
-const ufbx = @import("ufbx");
+const cgltf = @import("cgltf");
 const linalg = geo.linalg;
 const Allocator = std.mem.Allocator;
 const File = std.fs.File;
@@ -57,6 +57,7 @@ pub const Manager = struct {
 
     pub const Error = Allocator.Error ||
         File.OpenError ||
+        MappedFile.Error ||
         Asset.Cached.Texture.Error ||
         Asset.Cached.Model.Error ||
         error{ UnknownAssetHandle, TooManyAttempts };
@@ -126,62 +127,50 @@ pub const Manager = struct {
         m.* = undefined;
     }
 
-    /// Set to 0 for unlimited attempts
     const max_get_attempts = 5;
 
     /// Only locks manager exclusively when asset is not in cache anymore.
     /// This comes at the cost of more locking actions and double checks in
     /// case of a load.
     /// Adds a reference to the asset associated with `handle`.
-    pub fn get(m: *Manager, allocator: Allocator, handle: Handle) Error!Asset.Cached {
-        m.lock.lockShared();
-        defer m.lock.unlockShared();
-        try m.getInner(allocator, handle, 0);
-    }
-    fn getInner(
+    pub fn get(
         m: *Manager,
         allocator: Allocator,
         handle: Asset.Handle,
-        attempt: isize,
     ) Error!Asset.Cached {
+        m.lock.lockShared();
+        defer m.lock.unlockShared();
+
         const location = m.handle_to_location.getPtr(handle) orelse
             return Error.UnknownAssetHandle;
-        const idx = location.index.value() orelse idx: {
+        const idx = location.index.value() orelse for (0..max_get_attempts) |_| {
             // This is the slow path anyway because we have to read from disk
             // so a couple more locking operations and double checks won't hurt
-            @branchHint(.cold);
-            m.lock.unlockShared();
-            m.lock.lock();
-            defer {
-                m.lock.unlock();
-                m.lock.lockShared();
-            }
-            const idx = location.index.value() orelse blk: {
-                @branchHint(.likely);
-                break :blk m.cacheAsset(allocator, handle, location);
-            };
-            break :idx idx;
-        };
-        return switch (m.cache.items[idx]) {
-            .tombstone => cached: {
-                // Another thread unloaded our asset while we weren't looking
-                @branchHint(.cold);
-                if (attempt == (max_get_attempts - 1)) {
-                    return Error.TooManyAttempts;
+            @branchHint(.unlikely);
+            {
+                m.lock.unlockShared();
+                m.lock.lock();
+                defer {
+                    m.lock.unlock();
+                    m.lock.lockShared();
                 }
-                const cached = try @call(
-                    .always_tail,
-                    getInner,
-                    .{ m, allocator, handle, (attempt + 1) },
-                );
-                break :cached cached;
-            },
-            else => |cached| blk: {
+                if (location.index == .none) {
+                    @branchHint(.likely);
+                    _ = try m.cacheAsset(allocator, handle, location);
+                }
+            }
+            if (location.index.value()) |idx| {
                 @branchHint(.likely);
-                location.addReference();
-                break :blk cached;
-            },
+                break idx;
+            }
+        } else {
+            @branchHint(.cold);
+            return Error.TooManyAttempts;
         };
+        const cached = m.cache.items[idx];
+        assert(cached != .tombstone);
+        location.addReference();
+        return cached;
     }
 
     /// Guaranteed to succeed and never lock exclusively.
@@ -193,8 +182,10 @@ pub const Manager = struct {
 
         const location = m.handle_to_location.getPtr(handle) orelse return null;
         const idx = location.index.value() orelse return null;
+        const cached = m.cache.items[idx];
+        assert(cached != .tombstone);
         location.addReference();
-        return m.cache.items[idx];
+        return cached;
     }
 
     /// Does not add a reference to the asset associated with the handle.
@@ -311,7 +302,6 @@ pub const Manager = struct {
     }
 
     /// Unload all cached assets that aren't referenced by anything.
-    /// Consolidated cache array.
     pub fn unloadAll(m: *Manager, allocator: Allocator) void {
         m.lock.lock();
         defer m.lock.unlock();
@@ -322,8 +312,58 @@ pub const Manager = struct {
                 m.uncacheAsset(allocator, location);
             }
         }
-        const used_len = std.mem.trimRight(Asset.Cached, m.cache.items, &.{.tombstone}).len;
-        m.cache.shrinkRetainingCapacity(used_len);
+    }
+
+    pub fn countCachedAssets(m: *Manager) usize {
+        m.lock.lockShared();
+        defer m.lock.unlockShared();
+        const count = m.cache.items.len - m.countTombstones();
+        return count;
+    }
+    pub fn countWastedCacheSlots(m: *Manager) usize {
+        m.lock.lockShared();
+        defer m.lock.unlockShared();
+        const count = m.countTombstones();
+        return count;
+    }
+    pub fn wastedCacheSlotPercentage(m: *Manager) std.math.IntFittingRange(0, 100) {
+        m.lock.lockShared();
+        defer m.lock.unlockShared();
+
+        const tombstone_count = m.countTombstones();
+        const percentage = ((100 * tombstone_count) / m.cache.items.len);
+        assert(percentage <= 100);
+        return @intCast(percentage);
+    }
+    /// Assumes that a shared lock is held.
+    inline fn countTombstones(m: *Manager) usize {
+        return std.mem.count(Asset.Cached, m.cache.items, &.{.tombstone});
+    }
+
+    /// Defragment and consolidate the cache array. Handles remain valid.
+    pub fn defragment(m: *Manager, allocator: Allocator) void {
+        m.lock.lock();
+        defer m.lock.unlock();
+
+        const location_iter = m.handle_to_location.valueIterator();
+        outer: while (location_iter.next()) |location| {
+            if (location.index.value()) |idx| {
+                const free_idx = inner: for (0..idx) |i| {
+                    if (m.cache.items[i] == .tombstone) {
+                        @branchHint(.unlikely);
+                        break :inner i;
+                    }
+                } else {
+                    @branchHint(.unlikely);
+                    break :outer;
+                };
+                m.cache.items[free_idx] = m.cache.items[idx];
+                m.cache.items[idx] = .tombstone;
+                location.index = .at(free_idx);
+            }
+        }
+        const new_len = std.mem.trimRight(Asset.Cached, m.cache.items, &.{.tombstone}).len;
+        m.cache.shrinkAndFree(allocator, new_len);
     }
 
     /// Asserts that asset is not in cache yet.
@@ -341,15 +381,18 @@ pub const Manager = struct {
         });
         defer file.close();
 
+        const mapped_file = try MappedFile.map(file);
+        defer mapped_file.unmap();
+
         const cached: Asset.Cached = switch (location.asset_kind) {
-            .texture_plain => .{ .texture = .load(file, .plain) },
-            .texture_sprite => .{ .texture = .load(file, .sprite) },
-            .model => .{ .model = .load(allocator, file) },
+            .texture_plain => .{ .texture = .load(mapped_file, .plain) },
+            .texture_sprite => .{ .texture = .load(mapped_file, .sprite) },
+            .model => .{ .model = .load(mapped_file) },
             .map => @panic("TODO: implement"),
         };
         errdefer switch (cached) {
             .texture => |texture| texture.unload(),
-            .model => |model| model.unload(allocator),
+            .model => |model| model.unload(),
             .map => @panic("TODO: implement"),
             .tombstone => unreachable,
         };
@@ -371,13 +414,14 @@ pub const Manager = struct {
         allocator: Allocator,
         location: *Location,
     ) void {
+        _ = allocator;
         assert(!location.isReferenced());
 
         const idx = location.index.value() orelse return;
         const cached = &m.cache.items[idx];
         switch (cached.*) {
             .texture => |texture| texture.unload(),
-            .model => |model| model.unload(allocator),
+            .model => |model| model.unload(),
             .map => @panic("TODO: implement"),
             .tombstone => unreachable,
         }
@@ -428,11 +472,11 @@ const Cached = union(enum) {
         pub const Kind = enum { plain, sprite };
         pub const Error = error{Stbi};
 
-        pub fn load(file: File, kind_: Texture.Kind) Error!Texture {
+        pub fn load(memory: []const u8, kind_: Texture.Kind) Error!Texture {
             var width: c_int, var height: c_int, var channels: c_int = undefined;
-            const data_raw: [*]u8 = stbi.stbi_load_from_callbacks(
-                &Texture.io_callbacks,
-                &file,
+            const data_raw: [*]u8 = stbi.stbi_load_from_memory(
+                memory.ptr,
+                @intCast(memory.len),
                 &width,
                 &height,
                 &channels,
@@ -465,83 +509,24 @@ const Cached = union(enum) {
         pub inline fn kind(texture: Texture) Texture.Kind {
             return if (texture.sprite_count > 0) .sprite else .plain;
         }
-
-        const io_callbacks = stbi.stbi_io_callbacks{
-            .read = &wrappedRead,
-            .skip = &wrappedSkip,
-            .eof = &wrappedEof,
-        };
-        fn wrappedRead(user: *anyopaque, data: [*]u8, size: c_int) callconv(.c) c_int {
-            const f: *const File = @ptrCast(user);
-            const buffer = data[0..@as(usize, @intCast(size))];
-            const bytes_read = f.readAll(buffer) catch 0;
-            return @intCast(bytes_read);
-        }
-        fn wrappedSkip(user: *anyopaque, n: c_int) callconv(.c) void {
-            const f: *const File = @ptrCast(user);
-            f.seekBy(n) catch {};
-        }
-        fn wrappedEof(user: *anyopaque) callconv(.c) c_int {
-            const f: *const File = @ptrCast(user);
-            const pos = f.getPos() catch 0;
-            const end_pos = f.getEndPos() catch 0;
-            return @intFromBool(pos == end_pos);
-        }
     };
 
     const Model = struct {
-        objs: []stdx.Obj,
+        data: *cgltf.cgltf_data,
 
         pub const Error = error{Ufbx};
 
-        pub fn load2(allocator: Allocator, file: File) Error!Model {
-            const objs = try stdx.Obj.parse(allocator, file);
-            return Model{ .objs = objs };
-        }
-
-        pub fn unload2(model: *Model, allocator: Allocator) void {
-            for (model.objs) |*obj| {
-                obj.deinit(allocator);
+        pub fn load(memory: []const u8) Error!Model {
+            const out_data_ptr: *cgltf.cgltf_data = undefined;
+            const res = cgltf.cgltf_parse(null, memory.len, memory.size, &out_data_ptr);
+            if (res != cgltf.cgltf_result_success) {
+                std.log.scoped(.cgltf).err("model load failed: code {d}", .{res});
             }
-            allocator.free(model.objs);
+            return Model{ .data = out_data_ptr };
+        }
+        pub fn unload(model: *Model) void {
+            cgltf.cgltf_free(model.data);
             model.* = undefined;
-        }
-
-        pub fn load(file: *File) Error!Model {
-            const stream = ufbx.ufbx_stream{
-                .read_fn = &wrappedRead,
-                .skip_fn = &wrappedSkip,
-                .size_fn = &wrappedSize,
-                .close_fn = null,
-                .user = @ptrCast(file),
-            };
-            var err: ufbx.ufbx_error = undefined;
-            const scene: *ufbx.ufbx_scene = ufbx.ufbx_load_stream(&stream, null, &err) orelse {
-                var err_buf: [ufbx.UFBX_ERROR_INFO_LENGTH]u8 = undefined;
-                const err_len = ufbx.ufbx_format_error(&err_buf, err_buf.len, &err);
-                const err_desc = err_buf[0..err_len];
-                std.log.scoped(.ufbx).err("model load failed: {s}", .{err_desc});
-                return Error.Ufbx;
-            };
-            // TODO
-        }
-        pub fn unload(model: *Model) void {}
-
-        fn wrappedRead(user: *anyopaque, data: *anyopaque, size: usize) callconv(.c) usize {
-            const f: *const File = @ptrCast(user);
-            const buffer = @as([*]u8, @ptrCast(data))[0..size];
-            const bytes_read = f.readAll(buffer) catch std.math.maxInt(usize);
-            return bytes_read;
-        }
-        fn wrappedSkip(user: *anyopaque, size: usize) callconv(.c) bool {
-            const f: *const File = @ptrCast(user);
-            f.seekBy(@intCast(size)) catch return false;
-            return true;
-        }
-        fn wrappedSize(user: *anyopaque) callconv(.c) u64 {
-            const f: *const File = @ptrCast(user);
-            const size = f.getEndPos() catch std.math.maxInt(u64);
-            return size;
         }
     };
 
@@ -550,4 +535,107 @@ const Cached = union(enum) {
         texture_name: []const u8,
         control_points: []linalg.v2f32.V,
     };
+};
+
+// I mainly use memory mapping here to keep things simple, using files would either mean
+// leaving file operations to the C depencencies (which is problematic because that would
+// require an absolute path to each asset which we do not have) or providing custom read
+// callbacks which have to satisfy sparsely documented specifications.
+// It's just easier to use plain memory buffers to read/parse from and for the kinds of
+// files we're dealing with it probably won't make a difference in performance anyways.
+
+const MappedFile = struct {
+    data: []const u8,
+    handle: if (target_os == .windows) windows.HANDLE else void,
+
+    pub const Error = posix.MMapError || error{ CreateFileMapping, MapViewOfFile };
+
+    pub fn map(file: File) Error!MappedFile {
+        const size = try file.getEndPos();
+        switch (target_os) {
+            .windows => {
+                const map_handle = CreateFileMappingA(
+                    file.handle,
+                    null,
+                    windows.PAGE_READONLY,
+                    0,
+                    0,
+                    null,
+                );
+                if (map_handle == null) {
+                    log.err("CreateFileMapping failed: {s}", .{
+                        @tagName(windows.GetLastError()),
+                    });
+                    return Error.CreateFileMapping;
+                }
+                errdefer windows.CloseHandle(map_handle);
+                const mapped = MapViewOfFile(map_handle, FILE_MAP_READ, 0, 0, 0);
+                if (mapped == null) {
+                    log.err("MapViewOfFile failed: {s}", .{
+                        @tagName(windows.GetLastError()),
+                    });
+                    return Error.MapViewOfFile;
+                }
+                return .{
+                    .data = @as([*]u8, @ptrCast(mapped))[0..size],
+                    .handle = map_handle,
+                };
+            },
+            .emscripten => @compileError("TOOD: implement"),
+            else => {
+                const mapped = try posix.mmap(
+                    null,
+                    size,
+                    posix.PROT.READ,
+                    .{ .TYPE = .SHARED },
+                    file.handle,
+                    0,
+                );
+                return .{
+                    .data = mapped,
+                    .handle = {},
+                };
+            },
+        }
+    }
+    pub fn unmap(mapped_file: MappedFile) void {
+        switch (target_os) {
+            .windows => {
+                const ok = UnmapViewOfFile(@ptrCast(mapped_file.data.ptr));
+                assert(ok);
+                windows.CloseHandle(mapped_file.handle);
+            },
+            .emscripten => @compileError("TODO: implement"),
+            else => {
+                posix.munmap(@alignCast(mapped_file.data));
+            },
+        }
+    }
+
+    const target_os = @import("builtin").target.os.tag;
+    const posix = std.posix;
+    const windows = std.os.windows;
+
+    const FILE_MAP_READ: windows.DWORD = 4;
+
+    extern "kernel32" fn CreateFileMappingA(
+        hFile: windows.HANDLE,
+        lpFileMappingAttributes: ?*windows.SECURITYATTRIBUTES,
+        flProtect: windows.DWORD,
+        dwMaximumSizeHigh: windows.DWORD,
+        dwMaximumSizeLow: windows.DWORD,
+        lpName: ?windows.LPCSTR,
+    ) callconv(.winapi) windows.HANDLE;
+
+    extern "kernel32" fn MapViewOfFile(
+        hFileMappingObject: windows.HANDLE,
+        dwDesiredAccess: windows.DWORD,
+        dwFileOffsetHigh: windows.DWORD,
+        dwFileOffsetLow: windows.DWORD,
+        dwNumberOfBytesToMap: windows.SIZE_T,
+    ) callconv(.winapi) windows.LPVOID;
+
+    extern "kernel32" fn UnmapViewOfFile(
+        lpBaseAddress: windows.LPCVOID,
+    ) callconv(.winapi) windows.BOOL;
 };
