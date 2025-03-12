@@ -118,7 +118,10 @@ pub fn build(b: *std.Build) void {
         else => @compileError("unsupported host OS"),
     } ++ switch (host_arch) {
         .x86_64 => "",
-        .aarch64 => if (host_os == .windows) @compileError("unsupported host") else "_arm64",
+        .aarch64 => if (host_os == .windows)
+            @compileError("unsupported host arch")
+        else
+            "_arm64",
         else => @compileError("unsupported host arch"),
     } ++ "/sokol-shdc" ++ if (host_os == .windows) ".exe" else "";
     const sokol_shdc_bin_path = sokol_tools_bin_dep.path(sokol_shdc_bin_subpath);

@@ -2,6 +2,7 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
+const stdx = @import("stdx");
 const options = @import("options");
 const sokol = @import("sokol");
 
@@ -13,24 +14,22 @@ pub const is_debug = (builtin.mode == .Debug);
 pub const is_wasm = (builtin.target.cpu.arch.isWasm());
 
 /// Call ASAP
-pub fn init() void {
-    asset_dir = if (options.asset_path) |absolute|
-        fs.openDirAbsolute(absolute, .{ .iterate = true }) catch @panic("could not access asset directory")
-    else switch (builtin.target.os.tag) {
-        .emscripten => {},
-        .ios => {},
-        else => blk: {
-            const asset_path = fs.getAppDataDir(allocator, "GoonsTD/assets") catch @panic("could not find app data directory");
-            defer allocator.free(asset_path);
-            break :blk fs.openDirAbsolute(asset_path, .{ .iterate = true }) catch @panic("could not access asset directory");
-        },
-    }
+pub fn init() !void {
+    errdefer if (is_debug) {
+        assert(debug_allocator.deinit() == .ok);
+    };
+    asset_dir = try fs.cwd().openDir(asset_path_rel, .{ .iterate = true });
+    errdefer asset_dir.close();
+    try asset_manager.discoverAssets(allocator, asset_dir);
+    errdefer asset_manager.deinit(allocator);
 }
 
 pub fn deinit() void {
-    if (is_debug) {
+    defer if (is_debug) {
         assert(debug_allocator.deinit() == .ok);
-    }
+    };
+    asset_dir.close();
+    asset_manager.deinit(allocator);
 }
 
 var debug_allocator = if (is_debug) std.heap.DebugAllocator(.{ .thread_safe = true }).init else {};
@@ -54,4 +53,7 @@ const Buffers = struct {};
 
 pub var game_state = @import("game").State{};
 
+const asset_path_rel = if (builtin.is_test) "test/assets" else "assets";
 pub var asset_dir: fs.Dir = undefined;
+
+pub var asset_manager: stdx.Asset.Manager = .init;
