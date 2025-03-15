@@ -80,6 +80,7 @@ fn sokolLog(
 
 fn sokolInit() callconv(.c) void {
     global.init() catch |err| @panic(@errorName(err));
+    errdefer global.deinit();
 
     gfx.setup(.{
         .environment = sokol.glue.environment(),

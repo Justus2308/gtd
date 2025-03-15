@@ -20,7 +20,7 @@ pub fn init() !void {
     };
     asset_dir = try fs.cwd().openDir(asset_path_rel, .{ .iterate = true });
     errdefer asset_dir.close();
-    try asset_manager.discoverAssets(allocator, asset_dir);
+    try asset_manager.discoverAssets(allocator);
     errdefer asset_manager.deinit(allocator);
 }
 
@@ -56,4 +56,4 @@ pub var game_state = @import("game").State{};
 const asset_path_rel = if (builtin.is_test) "test/assets" else "assets";
 pub var asset_dir: fs.Dir = undefined;
 
-pub var asset_manager: stdx.Asset.Manager = .init;
+pub var asset_manager: stdx.Asset.Manager = .init(&asset_dir);

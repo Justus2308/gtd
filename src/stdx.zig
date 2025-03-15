@@ -13,6 +13,11 @@ pub const integrate = @import("stdx/integrate.zig");
 pub const simd = @import("stdx/simd.zig");
 pub const StaticMultiArrayList = @import("stdx/static_multi_array_list.zig").StaticMultiArrayList;
 
+const memory_pool = @import("stdx/memory_pool.zig");
+pub const MemoryPoolUnmanaged = memory_pool.MemoryPoolUnmanaged;
+pub const MemoryPoolAlignedUnmanaged = memory_pool.MemoryPoolAlignedUnmanaged;
+pub const MemoryPoolExtraUnmanaged = memory_pool.MemoryPoolExtraUnmanaged;
+
 pub fn todo(comptime msg: []const u8) noreturn {
     @compileError("TODO: " ++ msg);
 }
