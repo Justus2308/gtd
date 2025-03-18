@@ -4,9 +4,6 @@ const sokol_bld = @import("sokol");
 
 const app_name = "GoonsTD";
 
-const host_os = builtin.os.tag;
-const host_arch = builtin.cpu.arch;
-
 const ShaderLanguage = enum {
     auto,
     glsl410,
@@ -20,34 +17,73 @@ const ShaderLanguage = enum {
     wgsl,
 };
 
+const Packaging = enum {
+    snap,
+    macos_app,
+    ios_app,
+    msix,
+    apk,
+    emcc,
+};
+
 pub fn build(b: *std.Build) void {
     // Resolve compilation options
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const host_os = b.graph.host.result.os.tag;
+    const host_arch = b.graph.host.result.cpu.arch;
+
     const target_os = target.result.os.tag;
     const target_arch = target.result.cpu.arch;
     const target_is_android = target.result.abi.isAndroid();
-    const target_is_mobile = (target_is_android or target_os == .ios or target_os == .emscripten);
+    const target_is_web = (target_arch == .wasm32 and target_os == .emscripten);
 
-    const optimize_is_safe = (optimize == .Debug or optimize == .ReleaseSafe);
+    if (!switch (host_os) {
+        .linux, .macos => switch (host_arch) {
+            .x86_64, .aarch64 => true,
+            else => false,
+        },
+        .windows => (host_arch == .x86_64),
+        else => false,
+    }) @panic("unsupported host");
 
     if (target_is_android) {
         @panic("TODO: support android");
     }
-    if (target_os == .emscripten) {
-        @panic("TODO: support web");
-    }
-    switch (target_os) {
-        .windows, .macos, .linux, .ios, .emscripten => {},
-        else => @panic("unsupported target OS"),
-    }
-    if (switch (target_arch) {
-        .x86_64 => (target_os != .linux and target_os != .macos and target_os != .windows),
-        .aarch64 => (target_os == .emscripten),
-        .wasm64 => (target_os != .emscripten),
-        else => true,
-    }) @panic("unsupported target");
+    const packaging: Packaging = pkg: {
+        switch (target_os) {
+            .linux => if (target_is_android) switch (target_arch) {
+                .aarch64 => break :pkg .apk,
+            } else switch (target_arch) {
+                .x86_64, .aarch64 => break :pkg .snap,
+            },
+            .macos => switch (target_arch) {
+                .x86_64, .aarch64 => break :pkg .macos_app,
+            },
+            .windows => switch (target_arch) {
+                .x86_64, .aarch64 => break :pkg .msix,
+            },
+            .ios => if (target_arch == .aarch64) break :pkg .ios_app,
+            .emscripten => if (target_arch == .wasm32) break :pkg .emcc,
+        }
+        @panic("unsupported target");
+    };
+    _ = packaging;
+    // if (!switch (target_os) {
+    //     .linux => switch (target_arch) {
+    //         .x86_64 => !target_is_android,
+    //         .aarch64 => true,
+    //         else => false,
+    //     },
+    //     .macos, .windows => switch (target_arch) {
+    //         .x86_64, .aarch64 => true,
+    //         else => false,
+    //     },
+    //     .ios => (target_arch == .aarch64),
+    //     .emscripten => (target_arch == .wasm32),
+    //     else => false,
+    // }) @panic("unsupported target");
 
     const data_path_abs: []const u8 = b.option([]const u8, "data-path", "Absolute path to the desired game data directory") orelse
         std.fs.getAppDataDir(b.allocator, "GoonsTD") catch @panic("Cannot find default application data directory");
@@ -56,7 +92,7 @@ pub fn build(b: *std.Build) void {
     const sokol_backend_hint: sokol_bld.SokolBackend = switch (shader_lang_hint) {
         .glsl410, .glsl430 => .gl,
         .glsl300es => .gles3,
-        .wgsl => if (sokol_bld.isPlatform(target.result, .web)) .wgpu else .auto,
+        .wgsl => if (target_is_web) .wgpu else .auto,
         else => .auto,
     };
 
@@ -111,19 +147,19 @@ pub fn build(b: *std.Build) void {
     const sokol_mod = sokol_dep.module("sokol");
 
     const sokol_tools_bin_dep = b.dependency("sokol_tools_bin", .{});
-    const sokol_shdc_bin_subpath = "bin/" ++ switch (host_os) {
+    const sokol_shdc_bin_subpath = std.mem.concat(b.allocator, u8, &.{ "bin/", switch (host_os) {
         .linux => "linux",
         .macos => "osx",
         .windows => "win32",
-        else => @compileError("unsupported host OS"),
-    } ++ switch (host_arch) {
+        else => @panic("unsupported host OS"),
+    }, switch (host_arch) {
         .x86_64 => "",
         .aarch64 => if (host_os == .windows)
-            @compileError("unsupported host arch")
+            @panic("unsupported host arch")
         else
             "_arm64",
-        else => @compileError("unsupported host arch"),
-    } ++ "/sokol-shdc" ++ if (host_os == .windows) ".exe" else "";
+        else => @panic("unsupported host arch"),
+    }, "/sokol-shdc", if (host_os == .windows) ".exe" else "" }) catch @panic("OOM");
     const sokol_shdc_bin_path = sokol_tools_bin_dep.path(sokol_shdc_bin_subpath);
 
     // Compile shader
@@ -168,6 +204,7 @@ pub fn build(b: *std.Build) void {
 
     // Declare modules and artifacts
     const internal_imports = [_]std.Build.Module.Import{
+        createImport(b, "State", optimize, target),
         createImport(b, "entities", optimize, target),
         createImport(b, "game", optimize, target),
         createImport(b, "stdx", optimize, target),
@@ -195,19 +232,16 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("sokol", sokol_mod);
     exe_mod.addImport("shader", shader_mod);
 
-    const exe = b.addExecutable(.{
-        .name = app_name,
-        .root_module = exe_mod,
-        .strip = ((optimize == .ReleaseSmall) or
-            (!optimize_is_safe and target_is_mobile)),
-        .single_threaded = false,
-    });
-
-    b.installArtifact(exe);
     b.getInstallStep().dependOn(&sokol_shdc_cmd.step);
 
-    const run_cmd = b.addRunArtifact(exe);
-    run_cmd.step.dependOn(b.getInstallStep());
+    const run_cmd = if (target_is_web) blk: {
+        const backend: WebBackend = switch (sokol_backend) {
+            .gles3 => .webgl2,
+            .wgpu => .webgpu,
+            else => unreachable,
+        };
+        break :blk buildWebExe(b, exe_mod, backend, sokol_dep);
+    } else buildNativeExe(b, exe_mod);
 
     if (b.args) |args| {
         run_cmd.addArgs(args);
@@ -268,4 +302,67 @@ fn addImportTests(b: *std.Build, imports: []const std.Build.Module.Import) void 
         const test_step = b.step(test_name, test_description);
         test_step.dependOn(&run_module_test.step);
     }
+}
+
+fn buildNativeExe(b: *std.Build, exe_mod: *std.Build.Module) *std.Build.Step.Run {
+    const optimize = exe_mod.optimize.?;
+    const target = exe_mod.resolved_target.?;
+
+    const target_os = target.result.os.tag;
+    const target_is_android = target.result.abi.isAndroid();
+    const target_is_mobile = (target_is_android or target_os == .ios or target_os == .emscripten);
+    const optimize_is_safe = (optimize == .Debug or optimize == .ReleaseSafe);
+
+    const exe = b.addExecutable(.{
+        .name = app_name,
+        .root_module = exe_mod,
+        .strip = ((optimize == .ReleaseSmall) or
+            (!optimize_is_safe and target_is_mobile)),
+        .single_threaded = false,
+    });
+    b.installArtifact(exe);
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+
+    return run_cmd;
+}
+const WebBackend = enum {
+    webgl2,
+    webgpu,
+};
+fn buildWebExe(
+    b: *std.Build,
+    exe_mod: *std.build.Module,
+    backend: WebBackend,
+    sokol_dep: *std.Build.Dependency,
+) *std.Build.Step.Run {
+    const optimize = exe_mod.optimize.?;
+    const target = exe_mod.resolved_target.?;
+
+    const optimize_is_safe = (optimize == .Debug or optimize == .ReleaseSafe);
+
+    const lib = b.addStaticLibrary(.{
+        .name = app_name,
+        .root_module = exe_mod,
+        .strip = !optimize_is_safe,
+        .single_threaded = false,
+    });
+    const emsdk = sokol_dep.builder.dependency("emsdk", .{});
+    const link_step = sokol_bld.emLinkStep(b, .{
+        .lib_main = lib,
+        .target = target,
+        .optimize = optimize,
+        .emsdk = emsdk,
+        .use_webgl2 = (backend == .webgl2),
+        .use_webgpu = (backend == .webgpu),
+        .use_emmalloc = true,
+        .use_filesystem = true,
+        .shell_file_path = sokol_dep.path("src/sokol/web/shell.html"),
+    }) catch @panic("emscripten: creating link step failed");
+
+    const run_cmd = sokol_bld.emRunStep(b, .{ .name = app_name, .emsdk = emsdk });
+    run_cmd.step.dependOn(&link_step.step);
+
+    return run_cmd;
 }

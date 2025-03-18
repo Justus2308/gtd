@@ -1,7 +1,27 @@
 // MIT License
+//
 // Copyright (c) 2021 kprotty
-// https://github.com/kprotty/zap/blob/blog/src/thread_pool.zig
-// Brought up to date with zig master
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+//
+// Source: https://github.com/kprotty/zap/blob/blog/src/thread_pool.zig
+// Adapted to work with Zig 0.14.0
 
 const std = @import("std");
 const ThreadPool = @This();
@@ -17,7 +37,7 @@ join_event: Event = .{},
 run_queue: Node.Queue = .{},
 threads: Atomic(?*Thread) = Atomic(?*Thread).init(null),
 
-const Sync = packed struct {
+const Sync = packed struct(u32) {
     /// Tracks the number of threads not searching for Tasks
     idle: u14 = 0,
     /// Tracks the number of threads spawned
@@ -138,7 +158,6 @@ inline fn notify(self: *ThreadPool, is_waking: bool) void {
 noinline fn notifySlow(self: *ThreadPool, is_waking: bool) void {
     var sync: Sync = @bitCast(self.sync.load(.monotonic));
     while (sync.state != .shutdown) {
-
         const can_wake = is_waking or (sync.state == .pending);
         if (is_waking) {
             assert(sync.state == .waking);
@@ -211,8 +230,8 @@ noinline fn wait(self: *ThreadPool, _is_waking: bool) error{Shutdown}!bool {
                 return is_waking or (sync.state == .signaled);
             });
 
-        // No notification to consume.
-        // Mark this thread as idle before sleeping on the idle_event.
+            // No notification to consume.
+            // Mark this thread as idle before sleeping on the idle_event.
         } else if (!is_idle) {
             var new_sync = sync;
             new_sync.idle += 1;
@@ -230,8 +249,8 @@ noinline fn wait(self: *ThreadPool, _is_waking: bool) error{Shutdown}!bool {
                 continue;
             });
 
-        // Wait for a signal by either notify() or shutdown() without wasting cpu cycles.
-        // TODO: Add I/O polling here.
+            // Wait for a signal by either notify() or shutdown() without wasting cpu cycles.
+            // TODO: Add I/O polling here.
         } else {
             self.idle_event.wait();
             sync = @bitCast(self.sync.load(.monotonic));
@@ -413,39 +432,36 @@ const Event = struct {
         var acquire_with: u32 = EMPTY;
         var state = self.state.load(.monotonic);
 
-        while (true) {
+        loop: switch (state) {
             // If we're shutdown then exit early.
             // acquire barrier to ensure operations before the shutdown() are seen after the wait().
             // Shutdown is rare so it's better to have an acquire barrier here instead of on CAS failure + load which are common.
-            if (state == SHUTDOWN) {
+            SHUTDOWN => {
                 @branchHint(.cold);
                 _ = self.state.load(.acquire);
                 return;
-            }
-
+            },
             // Consume a notification when it pops up.
             // acquire barrier to ensure operations before the notify() appear after the wait().
-            if (state == NOTIFIED) {
+            NOTIFIED => {
                 state = self.state.cmpxchgWeak(
                     state,
                     acquire_with,
                     .acquire,
                     .monotonic,
                 ) orelse return;
-                continue;
-            }
-
+                continue :loop state;
+            },
             // There is no notification to consume, we should wait on the event by ensuring its WAITING.
-            if (state != WAITING) blk: {
+            EMPTY => {
                 state = self.state.cmpxchgWeak(
                     state,
                     WAITING,
                     .monotonic,
                     .monotonic,
-                ) orelse break :blk;
-                continue;
-            }
-
+                ) orelse continue :loop WAITING;
+                continue :loop state;
+            },
             // Wait on the event until a notify() or shutdown().
             // If we wake up to a notification, we must acquire it with WAITING instead of EMPTY
             // since there may be other threads sleeping on the Futex who haven't been woken up yet.
@@ -453,9 +469,13 @@ const Event = struct {
             // Acquiring to WAITING will make the next notify() or shutdown() wake a sleeping futex thread
             // who will either exit on SHUTDOWN or acquire with WAITING again, ensuring all threads are awoken.
             // This unfortunately results in the last notify() or shutdown() doing an extra futex wake but that's fine.
-            std.Thread.Futex.wait(&self.state, WAITING);
-            state = self.state.load(.monotonic);
-            acquire_with = WAITING;
+            WAITING => {
+                std.Thread.Futex.wait(&self.state, WAITING);
+                state = self.state.load(.monotonic);
+                acquire_with = WAITING;
+                continue :loop state;
+            },
+            else => unreachable,
         }
     }
 
@@ -529,7 +549,7 @@ const Node = struct {
             }
         }
 
-        fn tryacquireConsumer(self: *Queue) error{Empty, Contended}!?*Node {
+        fn tryacquireConsumer(self: *Queue) error{ Empty, Contended }!?*Node {
             var stack = self.stack.load(.monotonic);
             while (true) {
                 if (stack & IS_CONSUMING != 0)

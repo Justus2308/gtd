@@ -17,6 +17,11 @@ const AppState = struct {
     bindings: gfx.Bindings = .{},
 };
 
+pub const RunSokolAppOptions = struct {
+    alloc_fn: ?fn (size: usize) ?*anyopaque = null,
+    realloc_fn: ?fn (ptr: ?*anyopaque, new_size: usize) ?*anyopaque = null,
+    free_fn: ?fn (ptr: ?*anyopaque) void = null,
+};
 pub fn runSokolApp(window_title: [:0]const u8, window_width: i32, window_height: i32) void {
     sokol.app.run(.{
         .init_cb = init,
@@ -24,9 +29,13 @@ pub fn runSokolApp(window_title: [:0]const u8, window_width: i32, window_height:
         .frame_cb = frame,
         .width = window_width,
         .height = window_height,
+        .fullscreen = true,
         .window_title = window_title,
         .icon = .{ .sokol_default = true },
         .logger = .{ .func = sokol.log.func },
+        .allocator = .{
+            .alloc_fn = 
+        },
     });
 }
 

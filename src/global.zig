@@ -53,7 +53,7 @@ const Buffers = struct {};
 
 pub var game_state = @import("game").State{};
 
-const asset_path_rel = if (builtin.is_test) "test/assets" else "assets";
+pub const asset_path_rel = if (builtin.is_test) "test/assets" else "assets";
 pub var asset_dir: fs.Dir = undefined;
 
 pub var asset_manager: stdx.Asset.Manager = .init(&asset_dir);

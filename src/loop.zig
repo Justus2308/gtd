@@ -1,68 +1,16 @@
-const builtin = @import("builtin");
 const std = @import("std");
 const sokol = @import("sokol");
-
-const mem = std.mem;
 const audio = sokol.audio;
 const gfx = sokol.gfx;
 
-const Allocator = mem.Allocator;
-const State = @import("State");
-
-const assert = std.debug.assert;
-const panic = std.debug.panic;
-
-const window_width = 1280;
-const window_height = 720;
-const window_title = "GTD";
-
-pub fn main() !void {
-    const desc = makeSokolDesc() catch |err| @panic(@errorName(err));
-    sokol.app.run(desc);
-}
-
-// TODO: For android builds
-comptime {
-    if (builtin.target.abi.isAndroid()) {
-        @export(&sokolMain, .{ .name = "sokol_main", .linkage = .strong });
-    }
-}
-fn sokolMain(argc: c_int, argv: [*][*]c_char) callconv(.c) sokol.app.Desc {
-    _ = .{ argc, argv };
-    const desc = makeSokolDesc() catch |err| @panic(@errorName(err));
-    return desc;
-}
-
-fn makeSokolDesc() !sokol.app.Desc {
-    const state = try State.preinit();
-    return sokol.app.Desc{
-        .init_userdata_cb = &init,
-        .cleanup_userdata_cb = &cleanup,
-        .frame_userdata_cb = &frame,
-        .event_userdata_cb = &event,
-        .width = window_width,
-        .height = window_height,
-        .fullscreen = true,
-        .window_title = window_title,
-        .icon = .{ .sokol_default = true },
-        .logger = .{ .func = &sokolLog },
-        .win32_console_utf8 = true,
-        .win32_console_attach = true,
-        .user_data = state,
-    };
-}
-
 pub fn init(userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @ptrCast(userdata);
-    state.init() catch @panic("OOM");
-
     gfx.setup(.{
         .environment = sokol.glue.environment(),
         .logger = .{ .func = &sokolLog },
     });
     audio.setup(.{ .logger = .{ .func = &sokolLog } });
 
-    state.render.bindings.vertex_buffers[0] = gfx.makeBuffer(.{
+    global.render_state.bindings.vertex_buffers[0] = gfx.makeBuffer(.{
         .usage = .DYNAMIC,
         .size = 0,
     });
@@ -117,16 +65,12 @@ pub fn init(userdata: ?*anyopaque) callconv(.c) void {
 }
 
 pub fn cleanup(userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @ptrCast(userdata);
-
     gfx.shutdown();
     audio.shutdown();
-    state.deinit();
+    global.deinit();
 }
 
 pub fn frame(userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @ptrCast(userdata);
-
     const frame_time: f32 = @floatCast(sokol.app.frameDuration());
 
     @memset(@as([]u8, @ptrCast(&draw_frame)), 0);
@@ -149,8 +93,6 @@ pub fn frame(userdata: ?*anyopaque) callconv(.c) void {
 }
 
 pub fn event(event_: *const sokol.app.Event, userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @ptrCast(userdata);
-
     switch (event_.type) {
         .KEY_DOWN, .KEY_UP => events.handleKeyboardEvent(event.*),
         .MOUSE_DOWN, .MOUSE_UP, .MOUSE_MOVE, .MOUSE_SCROLL, .MOUSE_ENTER, .MOUSE_LEAVE => events.handleMouseEvent(event.*),
@@ -191,19 +133,3 @@ pub fn sokolLog(
         else => sokol_log.info(format, args),
     }
 }
-
-// TODO move
-pub const palette = struct {
-    const data = std.enums.directEnumArray(Name, gfx.Color, 0, .{
-        .white = .{ .r = 1, .g = 1, .b = 1, .a = 1 },
-        .black = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
-    });
-    pub const Name = enum(usize) {
-        white = 0,
-        black,
-    };
-
-    pub inline fn get(comptime name: palette.Name) gfx.Color {
-        comptime return palette.data[@intFromEnum(name)];
-    }
-};

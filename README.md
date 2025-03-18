@@ -58,5 +58,5 @@ If you've supplied a custom `data-path` to `zig build` you will have to supply i
 - macOS (x86-64/aarch64)
 - Windows (x86-64/aarch64)
 - iOS (aarch64)
-- Emscripten (wasm64)
+- Emscripten (wasm32)
 - *soon&#8482;:* Android (aarch64)

@@ -18,6 +18,11 @@ pub const MemoryPoolUnmanaged = memory_pool.MemoryPoolUnmanaged;
 pub const MemoryPoolAlignedUnmanaged = memory_pool.MemoryPoolAlignedUnmanaged;
 pub const MemoryPoolExtraUnmanaged = memory_pool.MemoryPoolExtraUnmanaged;
 
+pub const concurrent_hash_map = @import("stdx/concurrent_hash_map.zig");
+pub const ConcurrentStringHashMapUnmanaged = concurrent_hash_map.ConcurrentStringHashMapUnmanaged;
+pub const ConcurrentAutoHashMapUnmanaged = concurrent_hash_map.ConcurrentAutoHashMapUnmanaged;
+pub const ConcurrentHashMapUnmanaged = concurrent_hash_map.ConcurrentHashMapUnmanaged;
+
 pub fn todo(comptime msg: []const u8) noreturn {
     @compileError("TODO: " ++ msg);
 }
