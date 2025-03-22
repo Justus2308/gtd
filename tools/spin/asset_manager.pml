@@ -99,7 +99,7 @@ proctype addReference() {
 		:: else ->
 			int state_ = state;
 			bool res;
-			CMPXCHG_WEAK(state, state_, (state + 1), res)
+			CMPXCHG_WEAK(state, state_, (state_ + 1), res)
 			if
 			:: (res == 0) -> skip
 			:: (res == 1) -> goto done
@@ -121,7 +121,7 @@ proctype removeReference() {
 		:: else ->
 			int state_ = state;
 			bool res;
-			CMPXCHG_WEAK(state, state_, (state - 1), res)
+			CMPXCHG_WEAK(state, state_, (state_ - 1), res)
 			if
 			:: (res == 0) -> skip
 			:: (res == 1) -> goto done

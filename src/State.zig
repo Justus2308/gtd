@@ -8,7 +8,7 @@ thread_pool: ThreadPool,
 render: Render,
 game: Game,
 
-asset_manager: Asset.Manager,
+asset_manager: asset.Manager,
 asset_dir: Dir,
 
 const State = @This();
@@ -20,7 +20,7 @@ const alignment = if (builtin.cpu.arch.isWasm())
 else
     std.heap.page_size_min;
 
-pub fn preinit() !*State {
+pub fn preinit() Allocator.Error!*State {
     // init allocator (this needs to happen before sokol init
     // because we have to have a pointer to `State` by then)
     var allocator_ctx = if (is_debug) DebugAllocator{} else {};
@@ -76,7 +76,7 @@ const stdx = @import("stdx");
 const fs = std.fs;
 const mem = std.mem;
 const Allocator = mem.Allocator;
-const Asset = stdx.Asset;
+const asset = stdx.asset;
 const DebugAllocator = std.heap.DebugAllocator(.{ .thread_safe = true });
 const Dir = fs.Dir;
 const ThreadPool = stdx.ThreadPool;

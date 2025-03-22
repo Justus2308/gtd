@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const stdx = @import("stdx");
 const geo = @import("geo");
@@ -10,7 +11,8 @@ const File = std.fs.File;
 const assert = std.debug.assert;
 const log = std.log.scoped(.assets);
 
-// TODO: split assets into separate arrays for each category?
+const is_debug = (builtin.mode == .Debug);
+const is_safe_build = (builtin.mode == .Debug or builtin.mode == .ReleaseSafe);
 
 /// Manages loading and caching assets from disk and lets multiple consumers
 /// share cached assets safely among multiple threads.
@@ -49,6 +51,10 @@ pub const Manager = struct {
         path_rel_len: u32,
         path_rel_ptr: [*]const u8,
         context: *anyopaque,
+
+        /// Unique identifier of the `Context` this location has
+        /// been initialized with. Only included in safe builds.
+        fingerprint: Fingerprint,
 
         pub const State = enum(u32) {
             /// Loaded but unreferenced.
@@ -91,6 +97,8 @@ pub const Manager = struct {
                 .path_rel_len = @intCast(path_rel_duped.len),
                 .path_rel_ptr = path_rel_duped.ptr,
                 .context = @ptrCast(context),
+
+                .fingerprint = Fingerprint.take(Context),
             };
         }
         pub fn deinit(
@@ -98,6 +106,8 @@ pub const Manager = struct {
             comptime Context: type,
             allocator: Allocator,
         ) void {
+            location.verifyFingerprint(Context);
+
             const ok = location.unload();
             assert(ok);
             allocator.free(location.pathRel());
@@ -110,6 +120,8 @@ pub const Manager = struct {
             comptime Context: type,
             asset_dir: Dir,
         ) Error!void {
+            location.verifyFingerprint(Context);
+
             var state = location.state.load(.monotonic);
             loop: switch (state) {
                 // Try to switch to loading state. If we aren't unloaded
@@ -124,7 +136,7 @@ pub const Manager = struct {
                     ) orelse break :loop;
                     continue :loop state;
                 },
-                // Some other thread has preempted us, we are done.
+                // Our job is being/has been done already.
                 else => return,
                 // Some other thread is unloading our asset right now.
                 // This is unfortunate, but we can't interrupt it safely
@@ -157,6 +169,8 @@ pub const Manager = struct {
             location.state.store(.unreferenced, .release);
         }
         pub fn unload(location: *Location, comptime Context: type) bool {
+            location.verifyFingerprint(Context);
+
             // Similiar structure to load(), but unload() cannot fail.
             var state = location.state.load(.monotonic);
             loop: switch (state) {
@@ -171,8 +185,8 @@ pub const Manager = struct {
                     ) orelse break :loop;
                     continue :loop state;
                 },
-                // Either we were preempted or there are still active
-                // references to this asset.
+                // Either our job is being/has been done already or
+                // there are still active references to this asset.
                 else => return false,
                 // Wait for asset to load and immediately try to unload it.
                 .loading => {
@@ -189,6 +203,7 @@ pub const Manager = struct {
         }
 
         pub inline fn getContext(location: Location, comptime Context: type) *const Context {
+            location.verifyFingerprint(Context);
             return @as(*const Context, @ptrCast(location.context));
         }
 
@@ -276,6 +291,62 @@ pub const Manager = struct {
                     });
                     return false;
                 },
+            }
+        }
+
+        fn verifyFingerprint(location: *Location, comptime T: type) void {
+            if (is_safe_build) {
+                const fingerprint = Fingerprint.take(T);
+                if (!location.fingerprint.eql(fingerprint)) {
+                    @branchHint(.cold);
+                    std.debug.panic(
+                        "Wrong 'Context' fingerprint: Expected {d}('{s}'), got {d}('{s}')",
+                        location.fingerprint.getId(),
+                        location.fingerprint.getName(),
+                        fingerprint.getId(),
+                        fingerprint.getName(),
+                    );
+                }
+            }
+        }
+
+        const Fingerprint = struct {
+            name: if (is_debug) [:0]const u8 else void,
+            id: TypeId,
+
+            pub inline fn take(comptime T: type) Fingerprint {
+                if (is_safe_build) {
+                    return Fingerprint{
+                        .name = if (is_debug) @typeName(T) else {},
+                        .id = typeId(T),
+                    };
+                } else {
+                    return {};
+                }
+            }
+            /// Runtime-only, to compare `Fingerprint`s at comptime use `eql()`.
+            pub inline fn getId(fingerprint: Fingerprint) usize {
+                return if (is_safe_build) @intFromPtr(fingerprint.id) else undefined;
+            }
+            pub inline fn getName(fingerprint: Fingerprint) [:0]const u8 {
+                return if (is_debug) fingerprint.name else "?";
+            }
+            pub inline fn eql(a: Fingerprint, b: Fingerprint) bool {
+                return (a.id == b.id);
+            }
+        };
+
+        const TypeId = if (is_safe_build) *const struct { _: u8 } else void;
+        inline fn typeId(comptime T: type) TypeId {
+            if (is_safe_build) {
+                return &struct {
+                    comptime {
+                        _ = T;
+                    }
+                    var id: @typeInfo(TypeId).pointer.child = undefined;
+                }.id;
+            } else {
+                return {};
             }
         }
     };
@@ -380,6 +451,7 @@ pub const Manager = struct {
             @compileError("Context needs load and unload");
         }
     }
+
     pub const Cached = union(enum) {
         texture: Texture,
         model: Model,
@@ -468,7 +540,7 @@ pub const Manager = struct {
         }
     }
 
-    const target_os = @import("builtin").target.os.tag;
+    const target_os = builtin.target.os.tag;
     const posix = std.posix;
     const windows = std.os.windows;
 

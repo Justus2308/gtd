@@ -7,7 +7,7 @@ const expect = std.testing.expext;
 
 const cache_line = std.atomic.cache_line;
 
-pub const Asset = @import("stdx/Asset.zig");
+pub const asset = @import("stdx/asset.zig");
 pub const ThreadPool = @import("stdx/ThreadPool.zig");
 pub const integrate = @import("stdx/integrate.zig");
 pub const simd = @import("stdx/simd.zig");
@@ -46,6 +46,65 @@ pub fn vectorLength(comptime VectorType: type) comptime_int {
         .array => |info| info.len,
         else => @compileError("Invalid type " ++ @typeName(VectorType)),
     };
+}
+
+pub const CountDeclsOptions = struct {
+    type: Type = .any,
+    name: Name = .any,
+
+    pub const Type = union(enum) {
+        id: std.builtin.TypeId,
+        exact: type,
+        custom: struct {
+            matchFn: fn (decl: std.builtin.Type.Declaration, arg: ?*anyopaque) bool,
+            arg: ?*anyopaque = null,
+        },
+        any,
+    };
+    pub const Name = union(enum) {
+        starts_with: []const u8,
+        ends_with: []const u8,
+        contains: []const u8,
+        equals: []const u8,
+        custom: struct {
+            matchFn: fn (haystack: []const u8, needle: []const u8) bool,
+            needle: []const u8,
+        },
+        any,
+    };
+};
+pub fn countDecls(comptime T: type, comptime options: CountDeclsOptions) comptime_int {
+    comptime var count = 0;
+    const decls = std.meta.declarations(T);
+    for (decls) |decl| {
+        const is_matching_type = switch (options.type) {
+            .any => true,
+            .id => |type_id| blk: {
+                const decl_info = @typeInfo(@TypeOf(@field(T, decl.name)));
+                break :blk (std.meta.activeTag(decl_info) == type_id);
+            },
+            .exact => |Exact| blk: {
+                const DeclType = @TypeOf(@field(T, decl.name));
+                break :blk (DeclType == Exact);
+            },
+            .custom => |custom| custom.matchFn(decl, custom.arg),
+        };
+        if (!is_matching_type) {
+            continue;
+        }
+        const is_matching_name = switch (options.name) {
+            .any => true,
+            .starts_with => |str| mem.startsWith(u8, decl.name, str),
+            .ends_with => |str| mem.endsWith(u8, decl.name, str),
+            .contains => |str| mem.containsAtLeast(u8, decl.name, 1, str),
+            .equals => |str| mem.eql(u8, decl.name, str),
+            .custom => |custom| custom.matchFn(decl.name, custom.needle),
+        };
+        if (is_matching_name) {
+            count += 1;
+        }
+    }
+    return count;
 }
 
 test {

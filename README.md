@@ -26,8 +26,8 @@ zig build --release=fast
 
 ### Options:
 ```
--Ddata-path=[string]          Absolute path to the desired game data directory
--Dslang=[enum]                Use a custom shader language if possible
+-Dpack-assets=[bool]         Pack all assets together with the executable (default: false)
+-Dslang=[enum]               Use a custom shader language if possible
 ```
 
 To get a comprehensive overview of all available build options run
@@ -35,18 +35,6 @@ To get a comprehensive overview of all available build options run
 ```
 zig build --help
 ```
-
-### Uninstall:
-GTD will install some assets and save your gamestate in your default application data directory (or the one you set with `-Ddata-path`).
-To cleanly remove everything run
-
-```
-zig build uninstall
-```
-
-If you've supplied a custom `data-path` to `zig build` you will have to supply it here again.
-
-[This might not totally work yet](https://github.com/ziglang/zig/issues/14943).
 
 ### Supported Build Hosts:
 - Linux (x86-64/aarch64)
@@ -60,3 +48,13 @@ If you've supplied a custom `data-path` to `zig build` you will have to supply i
 - iOS (aarch64)
 - Emscripten (wasm32)
 - *soon&#8482;:* Android (aarch64)
+
+## References
+
+A list of resources that really helped me along the way:
+
+- [R. Fabian: Data-Oriented Design](https://www.dataorienteddesign.com/dodbook/) (print version)
+- [LearnOpenGL](https://learnopengl.com/)
+- [Sokol Samples](https://github.com/floooh/sokol-samples)
+- [C. Yuksel et al.: On the Parameterization of Catmull-Rom Curves](https://www.cemyuksel.com/research/catmullrom_param/catmullrom.pdf)
+- [Resource efficient Thread Pools with Zig ](https://zig.news/kprotty/resource-efficient-thread-pools-with-zig-3291)

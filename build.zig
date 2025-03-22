@@ -55,17 +55,22 @@ pub fn build(b: *std.Build) void {
         switch (target_os) {
             .linux => if (target_is_android) switch (target_arch) {
                 .aarch64 => break :pkg .apk,
+                else => {},
             } else switch (target_arch) {
                 .x86_64, .aarch64 => break :pkg .snap,
+                else => {},
             },
             .macos => switch (target_arch) {
                 .x86_64, .aarch64 => break :pkg .macos_app,
+                else => {},
             },
             .windows => switch (target_arch) {
                 .x86_64, .aarch64 => break :pkg .msix,
+                else => {},
             },
             .ios => if (target_arch == .aarch64) break :pkg .ios_app,
             .emscripten => if (target_arch == .wasm32) break :pkg .emcc,
+            else => {},
         }
         @panic("unsupported target");
     };
@@ -85,8 +90,11 @@ pub fn build(b: *std.Build) void {
     //     else => false,
     // }) @panic("unsupported target");
 
-    const data_path_abs: []const u8 = b.option([]const u8, "data-path", "Absolute path to the desired game data directory") orelse
-        std.fs.getAppDataDir(b.allocator, "GoonsTD") catch @panic("Cannot find default application data directory");
+    const pack_assets = b.option(
+        bool,
+        "pack-assets",
+        "Pack all assets together with the executable (default: false)",
+    ) orelse false;
 
     const shader_lang_hint = b.option(ShaderLanguage, "slang", "Use a custom shader language if possible") orelse .auto;
     const sokol_backend_hint: sokol_bld.SokolBackend = switch (shader_lang_hint) {
@@ -97,7 +105,7 @@ pub fn build(b: *std.Build) void {
     };
 
     const runtime_options = b.addOptions();
-    runtime_options.addOption([]const u8, "data_path", data_path_abs);
+    runtime_options.addOption(bool, "is_packed_assets", pack_assets);
 
     // Configure dependencies
     const stb_dep = b.dependency("stb", .{});
@@ -333,7 +341,7 @@ const WebBackend = enum {
 };
 fn buildWebExe(
     b: *std.Build,
-    exe_mod: *std.build.Module,
+    exe_mod: *std.Build.Module,
     backend: WebBackend,
     sokol_dep: *std.Build.Dependency,
 ) *std.Build.Step.Run {
