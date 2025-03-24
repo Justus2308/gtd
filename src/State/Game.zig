@@ -56,14 +56,15 @@ pub fn deinit(game: *Game) void {
 }
 
 pub fn frame(game: *Game, dt: u64) void {
-    switch (game.status) {
-        .unloaded => return,
-        .loading => {
-            // dispatch preload tasks to pool
-            const thread_pool = &game.parentState().thread_pool;
-            thread_pool.schedule(.from());
-        },
-    }
+    _ = .{ game, dt };
+    // switch (game.status) {
+    //     .unloaded => return,
+    //     .loading => {
+    //         // dispatch preload tasks to pool
+    //         const thread_pool = &game.parentState().thread_pool;
+    //         thread_pool.schedule(.from());
+    //     },
+    // }
 }
 
 /// Do not dispatch multiple of these at once,

@@ -1,10 +1,15 @@
-pass_action: gfx.PassAction,
-pipelines: std.enums.EnumFieldStruct(enum {
-    sprite,
-}, gfx.Pipeline, null),
-bindings: gfx.Bindings,
+passes: std.enums.EnumArray(enum {
+    default,
+    inst,
+}, Pass),
 
 const Render = @This();
+
+const Pass = struct {
+    action: gfx.PassAction,
+    pipeline: gfx.Pipeline,
+    bindings: gfx.Bindings,
+};
 
 const Vertex = extern struct {
     pos: v2f32.V,
@@ -14,11 +19,6 @@ const Vertex = extern struct {
 
 const initial_buffer_size = 16 << 10 << 10;
 
-// BUFFER LAYOUT:
-// 0: DYNAMIC, large
-// 1: DYNAMIC, large
-// 2: STREAM, large
-
 pub fn init(allocator: Allocator) Render {
     _ = allocator;
     gfx.setup(.{
@@ -26,7 +26,7 @@ pub fn init(allocator: Allocator) Render {
             .type = .{ .id = .@"fn" },
             .name = .{ .ends_with = "ShaderDesc" },
         }),
-        .pipeline_pool_size = std.meta.fields(@FieldType(Render, "pipelines")).len,
+        .pipeline_pool_size = @FieldType(Render, "passes").len,
         .environment = sokol.glue.environment(),
         .logger = .{ .func = &sokolLog },
     });
@@ -34,32 +34,99 @@ pub fn init(allocator: Allocator) Render {
         .logger = .{ .func = &sokolLog },
     });
 
-    var render = Render{};
+    var render = Render{ .passes = .initUndefined() };
 
-    const sprite_vertices = [_]Vertex{};
-    const sprite_buffer = gfx.makeBuffer(.{
-        .usage = .IMMUTABLE,
-        .data = gfx.asRange(sprite_vertices),
-        .label = @as([*:0]u8, "sprite-vertices"),
-    });
-    render.bindings.vertex_buffers[0] = sprite_buffer;
+    // default pass (renders single objects, can handle 2d and 3d)
 
-    const sprite_inst_buffer = gfx.makeBuffer(.{
+    const default_pass = render.passes.getPtr(.default);
+
+    const default_position_buffer = gfx.makeBuffer(.{
         .usage = .STREAM,
         .size = initial_buffer_size,
-        .label = @as([*:0]u8, "sprite-instances"),
+        .label = "default-positions",
     });
-    render.bindings.vertex_buffers[1] = sprite_inst_buffer;
+    default_pass.bindings.vertex_buffers[0] = default_position_buffer;
 
-    const sprite_indices = [_]u16{};
-    const sprite_index_buffer = gfx.makeBuffer(.{
+    const default_color_buffer = gfx.makeBuffer(.{
+        .usage = .STREAM,
+        .size = initial_buffer_size,
+        .label = "default-colors",
+    });
+    default_pass.bindings.vertex_buffers[1] = default_color_buffer;
+
+    const default_index_buffer = gfx.makeBuffer(.{
         .type = .INDEXBUFFER,
-        .data = gfx.asRange(sprite_indices),
+        .usage = .DYNAMIC,
+        .size = initial_buffer_size,
+        .label = "default-indices",
     });
-    render.bindings.index_buffer = sprite_index_buffer;
+    default_pass.bindings.index_buffer = default_index_buffer;
 
-    const sprite_shader = gfx.makeShader(shader.spriteShaderDesc(gfx.queryBackend()));
-    const sprite_pipeline = gfx.makePipeline(.{
+    const default_shader = gfx.makeShader(shader.defaultShaderDesc(gfx.queryBackend()));
+    const default_pipeline = gfx.makePipeline(.{
+        .layout = .{ .attrs = blk: {
+            var attrs: @FieldType(gfx.VertexLayoutState, "attrs") = @splat(.{});
+            attrs[shader.ATTR_default_in_pos] = .{
+                .format = .FLOAT3,
+                .buffer_index = 0,
+            };
+            attrs[shader.ATTR_default_in_color] = .{
+                .format = .FLOAT4,
+                .buffer_index = 1,
+            };
+            attrs[shader.ATTR_default_in_uv] = .{
+                .format = .FLOAT2,
+                .buffer_index = 1,
+            };
+            attrs[shader.ATTR_default_in_uv_offset] = .{
+                .format = .FLOAT2,
+                .buffer_index = 1,
+            };
+            attrs[shader.ATTR_default_in_bytes] = .{
+                .format = .FLOAT2,
+                .buffer_index = 1,
+            };
+            break :blk attrs;
+        } },
+        .shader = default_shader,
+        .index_type = .UINT16,
+        .cull_mode = .BACK,
+        .depth = .{
+            .compare = .LESS,
+            .write_enabled = true,
+        },
+        .label = "default-pipeline",
+    });
+    default_pass.pipeline = default_pipeline;
+
+    // instancing pass (renders many 2d objects with one draw call)
+
+    const inst_pass = render.passes.getPtr(.inst);
+
+    const inst_template_buffer = gfx.makeBuffer(.{
+        .usage = .DYNAMIC,
+        .size = initial_buffer_size,
+        .label = "inst-templates",
+    });
+    inst_pass.bindings.vertex_buffers[0] = inst_template_buffer;
+
+    const inst_position_buffer = gfx.makeBuffer(.{
+        .usage = .STREAM,
+        .size = initial_buffer_size,
+        .label = "inst-positions",
+    });
+    inst_pass.bindings.vertex_buffers[1] = inst_position_buffer;
+
+    const inst_index_buffer = gfx.makeBuffer(.{
+        .type = .INDEXBUFFER,
+        .usage = .DYNAMIC,
+        .size = initial_buffer_size,
+        .label = "inst-indices",
+    });
+    inst_pass.bindings.index_buffer = inst_index_buffer;
+
+    const inst_shader = gfx.makeShader(shader.instShaderDesc(gfx.queryBackend()));
+    const inst_pipeline = gfx.makePipeline(.{
         .layout = .{
             .buffers = blk: {
                 var buffers: @FieldType(gfx.VertexLayoutState, "buffers") = @splat(.{});
@@ -68,24 +135,24 @@ pub fn init(allocator: Allocator) Render {
             },
             .attrs = blk: {
                 var attrs: @FieldType(gfx.VertexLayoutState, "attrs") = @splat(.{});
-                attrs[shader.ATTR_sprite_in_pos] = .{ .format = .FLOAT2, .buffer_index = 0 };
-                attrs[shader.ATTR_sprite_in_inst_pos] = .{ .format = .FLOAT2, .buffer_index = 0 };
-                attrs[shader.ATTR_sprite_in_color] = .{ .format = .FLOAT4, .buffer_index = 1 };
-                attrs[shader.ATTR_sprite_in_uv] = .{ .format = .FLOAT2, .buffer_index = 1 };
-                attrs[shader.ATTR_sprite_in_scale] = .{ .format = .FLOAT2, .buffer_index = 1 };
+                attrs[shader.ATTR_inst_in_pos] = .{ .format = .FLOAT2, .buffer_index = 0 };
+                attrs[shader.ATTR_inst_in_pos_offset] = .{ .format = .FLOAT2, .buffer_index = 1 };
+                attrs[shader.ATTR_inst_in_scale] = .{ .format = .FLOAT2, .buffer_index = 1 };
+                attrs[shader.ATTR_inst_in_color] = .{ .format = .FLOAT4, .buffer_index = 2 };
+                attrs[shader.ATTR_inst_in_uv] = .{ .format = .FLOAT2, .buffer_index = 2 };
                 break :blk attrs;
             },
         },
-        .shader = sprite_shader,
+        .shader = inst_shader,
         .index_type = .UINT16,
         .cull_mode = .BACK,
         .depth = .{
             .compare = .ALWAYS,
             .write_enabled = false,
         },
-        .label = @as([*:0]u8, "sprite-pipeline"),
+        .label = "inst-pipeline",
     });
-    render.pipeline = sprite_pipeline;
+    inst_pass.pipeline = inst_pipeline;
 
     return render;
 }
@@ -97,7 +164,8 @@ pub fn deinit(render: *Render) void {
 }
 
 pub fn update(render: *Render, dt: u64) void {
-    const asset_manager = &render.parentState().asset_manager;
+    _ = .{ render, dt };
+    // const asset_manager = &render.parentState().asset_manager;
 }
 
 pub fn sokolLog(
@@ -117,7 +185,7 @@ pub fn sokolLog(
         "UNKNOWN";
     const message = message_or_null orelse "No message provided";
     const filename = filename_or_null orelse "?";
-    const format = "{[{[tag_nonnull]s}:{[filename]s}:{[line_nr]d}]: {[log_item]s}: {[message]s}";
+    const format = "[{s}:{s}:{d}]: {s}: {s}";
     const args = .{ tag_nonnull, filename, line_nr, log_item, message };
     const sokol_log = std.log.scoped(.sokol);
     switch (log_level) {
@@ -136,6 +204,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const stdx = @import("stdx");
 const geo = @import("geo");
+const hmm = @import("hmm");
 const sokol = @import("sokol");
 const shader = @import("shader");
 const audio = sokol.audio;

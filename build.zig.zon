@@ -21,6 +21,10 @@
             .url = "https://github.com/jkuhlmann/cgltf/archive/master.tar.gz",
             .hash = "N-V-__8AAKFjBABZzn84N4iiLQyNQSMVsv5XBJSvZTPcQL2H",
         },
+        .hmm = .{
+            .url = "https://github.com/HandmadeMath/HandmadeMath/archive/master.tar.gz",
+            .hash = "N-V-__8AAKcABACNMJ-W931ffS-WKtSh_CIihaf1Y3rlPBF2",
+        },
     },
     .paths = .{
         "build.zig",

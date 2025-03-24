@@ -97,7 +97,7 @@ pub fn ConcurrentHashMapUnmanaged(
         pub const GetOrPutResult = HashMap.GetOrPutResult;
 
         const Bucket = struct {
-            _: void align(std.atomic.cache_line),
+            _: void align(std.atomic.cache_line) = {},
             lock: std.Thread.RwLock,
             hash_map: HashMap,
 

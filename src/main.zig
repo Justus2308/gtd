@@ -53,23 +53,23 @@ fn makeSokolDesc() Allocator.Error!sokol.app.Desc {
 }
 
 pub fn init(userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @ptrCast(userdata);
+    const state: *State = @alignCast(@ptrCast(userdata));
     state.init() catch @panic("OOM");
 }
 
 pub fn cleanup(userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @ptrCast(userdata);
+    const state: *State = @alignCast(@ptrCast(userdata));
     state.deinit();
 }
 
 pub fn frame(userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @ptrCast(userdata);
+    const state: *State = @alignCast(@ptrCast(userdata));
     const dt = sokol.app.frameDuration();
-    state.update(dt);
+    state.update(dt) catch {};
 }
 
-pub fn event(event_: *const sokol.app.Event, userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @ptrCast(userdata);
+pub fn event(event_: ?*const sokol.app.Event, userdata: ?*anyopaque) callconv(.c) void {
+    const state: *State = @alignCast(@ptrCast(userdata));
     _ = .{ state, event_ };
     // switch (event_.type) {
     //     .KEY_DOWN, .KEY_UP => events.handleKeyboardEvent(event.*),

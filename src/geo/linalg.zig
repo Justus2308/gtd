@@ -71,7 +71,7 @@ pub fn vec(comptime len: comptime_int, comptime T: type) type {
         }
 
         fn crossUnimpl(_: V, _: V) noreturn {
-            @panic(std.fmt.comptimePrint("cross product is not implemented for vector length {d}", .{len}));
+            @panic("cross product is only implemented for dim=2-3");
         }
 
         pub inline fn distance(v: V, w: V) S {
@@ -154,11 +154,15 @@ pub fn mat(comptime dim: comptime_int, comptime T: type) type {
         }
 
         pub inline fn diagonal(s: S) M {
-            return scale(ident, s);
+            return ident * splat(s);
         }
 
-        pub inline fn scale(m: M, s: S) M {
-            return (m * splat(s));
+        pub const scale = if (dim == 4) scale4 else diagonal;
+
+        inline fn scale4(s: S) M {
+            var m = diagonal(s);
+            m[dim - 1] = 1;
+            return m;
         }
 
         // This actually compiles to almost identical code to `mult` in ReleaseFast mode
@@ -174,7 +178,7 @@ pub fn mat(comptime dim: comptime_int, comptime T: type) type {
         //     return res;
         // }
 
-        pub inline fn mult(m: M, n: M) M {
+        pub fn mult(m: M, n: M) M {
             var res: [dim]V = undefined;
             inline for (0..dim) |i| {
                 const n_col = simd.extract(n, (dim * i), dim);
@@ -191,7 +195,7 @@ pub fn mat(comptime dim: comptime_int, comptime T: type) type {
             return res;
         }
 
-        pub inline fn transpose(m: M) M {
+        pub fn transpose(m: M) M {
             const mask = comptime blk: {
                 var res: [dim * dim]i32 = undefined;
                 for (0..dim) |i| {
@@ -204,8 +208,69 @@ pub fn mat(comptime dim: comptime_int, comptime T: type) type {
             return @shuffle(S, m, undefined, mask);
         }
 
-        pub const lookAt = if (dim == 4) lookAt4 else lookAtUnimpl;
+        pub const rotation = switch (dim) {
+            2 => rotation2,
+            4 => rotation4,
+            else => rotationUnimpl,
+        };
 
+        inline fn rotation2(angle: S) M {
+            const sin_angle = @sin(angle);
+            const cos_angle = @cos(angle);
+            const m = M{
+                cos_angle,
+                sin_angle,
+                -sin_angle,
+                cos_angle,
+            };
+            return m;
+        }
+
+        pub const Axis = enum { x, y, z };
+        inline fn rotation4(comptime axis: Axis, angle: S) M {
+            const sin_angle = @sin(angle);
+            const cos_angle = @cos(angle);
+            // zig fmt: off
+            const m: M = switch (axis) {
+                .x => .{
+                    1, 0, 0, 0,
+                    0, cos_angle, sin_angle, 0,
+                    0, -sin_angle, cos_angle, 0,
+                    0, 0, 0, 1,
+                },
+                .y => .{
+                    cos_angle, 0, -sin_angle, 0,
+                    0, 1, 0, 0,
+                    sin_angle, 0, cos_angle, 0,
+                    0, 0, 0, 1,
+                },
+                .z => .{
+                    cos_angle, sin_angle, 0, 0,
+                    -sin_angle, cos_angle, 0, 0,
+                    0, 0, 1, 0,
+                    0, 0, 0, 1,
+                },
+            };
+            // zig fmt: on
+            return m;
+        }
+
+        fn rotationUnimpl(angle: S) noreturn {
+            _ = angle;
+            @panic("rotation is only implemented for dim=2 and dim=4");
+        }
+
+        pub const lookAt = switch (dim) {
+            2 => lookAt2,
+            4 => lookAt4,
+            else => lookAtUnimpl,
+        };
+        fn lookAt2(eye: V, center: V) M {
+            var res: [dim][dim]S = undefined;
+            res[0] = 1;
+            _ = .{ res, eye, center };
+            return @bitCast(res);
+        }
         fn lookAt4(eye: v3f32.V, center: v3f32.V, up: v3f32.V) M {
             var res: [dim][dim]S = undefined;
 
@@ -238,6 +303,25 @@ pub fn mat(comptime dim: comptime_int, comptime T: type) type {
         fn lookAtUnimpl(eye: v3f32.V, center: v3f32.V, up: v3f32.V) noreturn {
             _ = .{ eye, center, up };
             @panic("lookAt is only implemented for dim=4");
+        }
+
+        pub const translate = switch (dim) {
+            4 => translate4,
+            else => translateGeneric,
+        };
+        inline fn translate4(translation: v3f32.V) M {
+            var m = ident;
+            m[12] = translation[0];
+            m[13] = translation[1];
+            m[14] = translation[2];
+        }
+        inline fn translateGeneric(translation: V) M {
+            var m = ident;
+            inline for (0..dim) |i| {
+                const mi = ((dim * (dim - 1)) + i);
+                m[mi] = translation[i];
+            }
+            return m;
         }
 
         pub const eql = mat_as_vec.eql;

@@ -2,6 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const sokol_bld = @import("sokol");
 
+const log = std.log.scoped(.build);
+
 const app_name = "GoonsTD";
 
 const ShaderLanguage = enum {
@@ -17,7 +19,18 @@ const ShaderLanguage = enum {
     wgsl,
 };
 
+const TargetCategory = enum {
+    other,
+    linux,
+    macos,
+    windows,
+    android,
+    ios,
+    web,
+};
+
 const Packaging = enum {
+    none,
     snap,
     macos_app,
     ios_app,
@@ -36,8 +49,6 @@ pub fn build(b: *std.Build) void {
 
     const target_os = target.result.os.tag;
     const target_arch = target.result.cpu.arch;
-    const target_is_android = target.result.abi.isAndroid();
-    const target_is_web = (target_arch == .wasm32 and target_os == .emscripten);
 
     if (!switch (host_os) {
         .linux, .macos => switch (host_arch) {
@@ -48,59 +59,87 @@ pub fn build(b: *std.Build) void {
         else => false,
     }) @panic("unsupported host");
 
-    if (target_is_android) {
-        @panic("TODO: support android");
-    }
-    const packaging: Packaging = pkg: {
+    if (!switch (target_arch) {
+        .wasm32 => (target_os == .emscripten),
+        .wasm64 => false,
+        else => true,
+    }) @panic("unsupported target: use 'wasm32-emscripten' to target web");
+
+    const target_category: TargetCategory = cat: {
         switch (target_os) {
-            .linux => if (target_is_android) switch (target_arch) {
-                .aarch64 => break :pkg .apk,
+            .linux => if (target.result.abi.isAndroid()) switch (target_arch) {
+                .aarch64, .arm => break :cat .android,
                 else => {},
             } else switch (target_arch) {
-                .x86_64, .aarch64 => break :pkg .snap,
+                .x86_64,
+                .x86,
+                .aarch64,
+                .aarch64_be,
+                .arm,
+                .armeb,
+                .powerpc64,
+                .powerpc64le,
+                .powerpc,
+                => break :cat .linux,
                 else => {},
             },
             .macos => switch (target_arch) {
-                .x86_64, .aarch64 => break :pkg .macos_app,
+                .x86_64, .aarch64 => break :cat .macos,
                 else => {},
             },
             .windows => switch (target_arch) {
-                .x86_64, .aarch64 => break :pkg .msix,
+                .x86_64, .aarch64, .x86 => break :cat .windows,
                 else => {},
             },
-            .ios => if (target_arch == .aarch64) break :pkg .ios_app,
-            .emscripten => if (target_arch == .wasm32) break :pkg .emcc,
+            .ios => if (target_arch == .aarch64) break :cat .ios,
+            .emscripten => if (target_arch == .wasm32) break :cat .web,
             else => {},
         }
-        @panic("unsupported target");
+        log.warn(
+            "building for potentially unstable target '{s}'",
+            .{target.result.zigTriple(b.allocator) catch @panic("OOM")},
+        );
+        break :cat .other;
+    };
+
+    if (target_category == .android) {
+        @panic("TODO: support android");
+    }
+
+    const packaging: Packaging = b.option(
+        Packaging,
+        "packaging",
+        "Use a custom packaging format",
+    ) orelse switch (target_category) {
+        .linux => .snap,
+        .macos => .macos_app,
+        .windows => .msix,
+        .android => .apk,
+        .ios => .ios_app,
+        .web => .emcc,
+        .other => .none,
     };
     _ = packaging;
-    // if (!switch (target_os) {
-    //     .linux => switch (target_arch) {
-    //         .x86_64 => !target_is_android,
-    //         .aarch64 => true,
-    //         else => false,
-    //     },
-    //     .macos, .windows => switch (target_arch) {
-    //         .x86_64, .aarch64 => true,
-    //         else => false,
-    //     },
-    //     .ios => (target_arch == .aarch64),
-    //     .emscripten => (target_arch == .wasm32),
-    //     else => false,
-    // }) @panic("unsupported target");
 
     const pack_assets = b.option(
         bool,
         "pack-assets",
-        "Pack all assets together with the executable (default: false)",
-    ) orelse false;
+        "Pack all assets together with the executable (default: true for web builds)",
+    ) orelse (target_category == .web);
 
-    const shader_lang_hint = b.option(ShaderLanguage, "slang", "Use a custom shader language if possible") orelse .auto;
+    if (pack_assets and target_category != .web) {
+        log.info("asset packing is only supported for web targets at the moment", .{});
+    }
+
+    const shader_lang_hint = b.option(
+        ShaderLanguage,
+        "slang",
+        "Use a custom shader language if possible",
+    ) orelse .auto;
     const sokol_backend_hint: sokol_bld.SokolBackend = switch (shader_lang_hint) {
         .glsl410, .glsl430 => .gl,
         .glsl300es => .gles3,
-        .wgsl => if (target_is_web) .wgpu else .auto,
+        .wgsl => if (target_category == .web) .wgpu else .auto,
         else => .auto,
     };
 
@@ -144,6 +183,22 @@ pub fn build(b: *std.Build) void {
         .language = .c,
     });
 
+    const hmm_dep = b.dependency("hmm", .{});
+    const hmm_h_path = hmm_dep.path("HandmadeMath.h");
+    const hmm_tc = b.addTranslateC(.{
+        .root_source_file = hmm_h_path,
+        .target = target,
+        .optimize = optimize,
+    });
+    const hmm_mod = hmm_tc.createModule();
+    hmm_mod.addCSourceFile(.{
+        .file = hmm_h_path,
+        .flags = &.{
+            "-std=c11",
+        },
+        .language = .c,
+    });
+
     const sokol_dep = b.dependency("sokol", .{
         .target = target,
         .optimize = optimize,
@@ -159,14 +214,11 @@ pub fn build(b: *std.Build) void {
         .linux => "linux",
         .macos => "osx",
         .windows => "win32",
-        else => @panic("unsupported host OS"),
+        else => unreachable,
     }, switch (host_arch) {
         .x86_64 => "",
-        .aarch64 => if (host_os == .windows)
-            @panic("unsupported host arch")
-        else
-            "_arm64",
-        else => @panic("unsupported host arch"),
+        .aarch64 => "_arm64",
+        else => unreachable,
     }, "/sokol-shdc", if (host_os == .windows) ".exe" else "" }) catch @panic("OOM");
     const sokol_shdc_bin_path = sokol_tools_bin_dep.path(sokol_shdc_bin_subpath);
 
@@ -211,22 +263,29 @@ pub fn build(b: *std.Build) void {
     // defer data_dir.close();
 
     // Declare modules and artifacts
-    const internal_imports = [_]std.Build.Module.Import{
-        createImport(b, "State", optimize, target),
-        createImport(b, "entities", optimize, target),
-        createImport(b, "game", optimize, target),
-        createImport(b, "stdx", optimize, target),
-        createImport(b, "geo", optimize, target),
-        createImport(b, "global", optimize, target),
-    };
-    addImportTests(b, &internal_imports);
-
     const shader_mod = b.createModule(.{
         .root_source_file = sokol_shdc_out,
         .optimize = optimize,
         .target = target,
     });
     shader_mod.addImport("sokol", sokol_mod);
+
+    const dep_imports = [_]std.Build.Module.Import{
+        .{ .name = "sokol", .module = sokol_mod },
+        .{ .name = "stbi", .module = stbi_mod },
+        .{ .name = "cgltf", .module = cgltf_mod },
+        .{ .name = "shader", .module = shader_mod },
+    };
+    const internal_imports = [_]std.Build.Module.Import{
+        createImport(b, "State", optimize, target),
+        // createImport(b, "entities", optimize, target),
+        // createImport(b, "game", optimize, target),
+        createImport(b, "stdx", optimize, target),
+        createImport(b, "geo", optimize, target),
+    };
+    crossAddImports(&dep_imports, &internal_imports);
+
+    addImportTests(b, &internal_imports);
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -239,10 +298,11 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("cgltf", cgltf_mod);
     exe_mod.addImport("sokol", sokol_mod);
     exe_mod.addImport("shader", shader_mod);
+    exe_mod.addImport("hmm", hmm_mod);
 
     b.getInstallStep().dependOn(&sokol_shdc_cmd.step);
 
-    const run_cmd = if (target_is_web) blk: {
+    const run_cmd = if (target_category == .web) blk: {
         const backend: WebBackend = switch (sokol_backend) {
             .gles3 => .webgl2,
             .wgpu => .webgpu,
@@ -268,6 +328,7 @@ pub fn build(b: *std.Build) void {
     exe_unit_tests_mod.addImport("cgltf", cgltf_mod);
     exe_unit_tests_mod.addImport("sokol", sokol_mod);
     exe_unit_tests_mod.addImport("shader", shader_mod);
+    exe_mod.addImport("hmm", hmm_mod);
 
     const exe_unit_tests = b.addTest(.{
         .root_module = exe_unit_tests_mod,
@@ -294,11 +355,31 @@ fn createImport(
     return import;
 }
 
+fn addImports(
+    module: *std.Build.Module,
+    imports: []const std.Build.Module.Import,
+) void {
+    for (imports) |import| {
+        module.addImport(import.name, import.module);
+    }
+}
+
+fn crossAddImports(
+    lhs: []const std.Build.Module.Import,
+    rhs: []const std.Build.Module.Import,
+) void {
+    for (lhs) |limp| {
+        addImports(limp.module, lhs);
+        addImports(limp.module, rhs);
+    }
+    for (rhs) |rimp| {
+        addImports(rimp.module, lhs);
+        addImports(rimp.module, rhs);
+    }
+}
+
 fn addImportTests(b: *std.Build, imports: []const std.Build.Module.Import) void {
     for (imports) |import| {
-        for (imports) |imp| {
-            import.module.addImport(imp.name, imp.module);
-        }
         const test_name = b.fmt("test-{s}", .{import.name});
         const module_test = b.addTest(.{
             .name = test_name,

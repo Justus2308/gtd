@@ -36,34 +36,35 @@ pub fn preinit() Allocator.Error!*State {
     state.allocator_ctx = allocator_ctx;
     state.allocator = if (is_debug) state.allocator_ctx.allocator() else allocator;
     allocator_ctx = undefined;
-    allocator = undefined;
     errdefer state.allocator.destroy(state);
 
     return state;
 }
 pub fn init(state: *State) !void {
-    state.thread_pool.init(.{});
+    state.thread_pool = .init(.{});
     errdefer state.thread_pool.deinit();
-    state.render = try .init(state.allocator);
-    errdefer state.render.deinit(state.allocator);
-    state.game = try .init(state.allocator);
-    errdefer state.game.deinit(state.allocator);
+    state.render = .init(state.allocator);
+    errdefer state.render.deinit();
+    state.game = .init(state.allocator);
+    errdefer state.game.deinit();
     state.asset_dir = try fs.cwd().openDir(asset_sub_path, .{ .iterate = true });
     errdefer state.asset_dir.close();
-    state.asset_manager = .init(&state.asset_dir);
-    errdefer state.asset_manager.deinit(state.allocator);
+    state.asset_manager = .init(state.allocator, &state.asset_dir);
+    errdefer state.asset_manager.deinit();
 }
 pub fn deinit(state: *State) void {
-    state.asset_manager.deinit(state.allocator);
+    state.asset_manager.deinit();
     state.asset_dir.close();
-    state.game.deinit(state.allocator);
-    state.render.deinit(state.allocator);
+    state.game.deinit();
+    state.render.deinit();
     if (is_debug) {
         assert(state.allocator_ctx.deinit() == .ok);
     }
 }
 
-pub fn update(state: *State, dt: u64) !void {}
+pub fn update(state: *State, dt: f64) !void {
+    _ = .{ state, dt };
+}
 
 const asset_sub_path = if (builtin.is_test) "test/assets" else "assets";
 
