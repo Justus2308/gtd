@@ -2,12 +2,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 const sokol_bld = @import("sokol");
 
+const assert = std.debug.assert;
 const log = std.log.scoped(.build);
 
 const app_name = "GoonsTD";
 
 const ShaderLanguage = enum {
-    auto,
     glsl410,
     glsl430,
     glsl300es,
@@ -97,7 +97,7 @@ pub fn build(b: *std.Build) void {
         }
         log.warn(
             "building for potentially unstable target '{s}'",
-            .{target.result.zigTriple(b.allocator) catch @panic("OOM")},
+            .{target.result.linuxTriple(b.allocator) catch @panic("OOM")},
         );
         break :cat .other;
     };
@@ -119,15 +119,14 @@ pub fn build(b: *std.Build) void {
         .web => .emcc,
         .other => .none,
     };
-    _ = packaging;
 
-    const pack_assets = b.option(
+    const is_pack_assets = b.option(
         bool,
         "pack-assets",
         "Pack all assets together with the executable (default: true for web builds)",
     ) orelse (target_category == .web);
 
-    if (pack_assets and target_category != .web) {
+    if (is_pack_assets and target_category != .web) {
         log.info("asset packing is only supported for web targets at the moment", .{});
     }
 
@@ -135,37 +134,70 @@ pub fn build(b: *std.Build) void {
         ShaderLanguage,
         "slang",
         "Use a custom shader language if possible",
-    ) orelse .auto;
-    const sokol_backend_hint: sokol_bld.SokolBackend = switch (shader_lang_hint) {
+    );
+    const sokol_backend_hint: sokol_bld.SokolBackend = if (shader_lang_hint) |hint| switch (hint) {
         .glsl410, .glsl430 => .gl,
         .glsl300es => .gles3,
         .wgsl => if (target_category == .web) .wgpu else .auto,
         else => .auto,
+    } else .auto;
+    const sokol_backend = sokol_bld.resolveSokolBackend(sokol_backend_hint, target.result);
+
+    const shader_lang: ShaderLanguage = switch (sokol_backend) {
+        .metal => metal: {
+            if (shader_lang_hint) |hint| switch (hint) {
+                .metal_macos, .metal_ios, .metal_sim => |lang| break :metal lang,
+                else => {},
+            };
+            break :metal switch (target_category) {
+                .macos => .metal_macos,
+                .ios => .metal_ios,
+                else => .metal_sim,
+            };
+        },
+        .d3d11 => d3d11: {
+            if (shader_lang_hint) |hint| switch (hint) {
+                .hlsl4, .hlsl5 => |lang| break :d3d11 lang,
+                else => {},
+            };
+            break :d3d11 .hlsl5;
+        },
+        .gles3 => .glsl300es,
+        .wgpu => .wgsl,
+        .gl => gl: {
+            if (shader_lang_hint) |hint| switch (hint) {
+                .glsl410, .glsl430 => |lang| break :gl lang,
+                else => {},
+            };
+            break :gl .glsl430;
+        },
+        else => unreachable,
     };
 
+    const is_use_compute_hint =
+        b.option(bool, "use-compute", "Make use of compute shaders if possible (default: true)") orelse true;
+    const is_use_compute = (is_use_compute_hint and switch (target_category) {
+        .macos, .ios => (sokol_backend == .metal),
+        .windows => (sokol_backend == .d3d11 or sokol_backend == .gl),
+        .linux => (sokol_backend == .gl),
+        .web => (sokol_backend == .wgpu),
+        .android, .other => false,
+    });
+
+    if (b.verbose) log.info("target={s}, optimize={s}, packaging={s}, pack-assets={s}, slang={s}, use-compute={s}", .{
+        target.result.linuxTriple(b.allocator) catch @panic("OOM"),
+        @tagName(optimize),
+        @tagName(packaging),
+        fmtBool(is_pack_assets),
+        @tagName(shader_lang),
+        fmtBool(is_use_compute),
+    });
+
     const runtime_options = b.addOptions();
-    runtime_options.addOption(bool, "is_packed_assets", pack_assets);
+    runtime_options.addOption(bool, "is_packed_assets", is_pack_assets);
+    runtime_options.addOption(bool, "is_use_compute", is_use_compute);
 
     // Configure dependencies
-    const stb_dep = b.dependency("stb", .{});
-    const stbi_h_path = stb_dep.path("stb_image.h");
-    const stbi_tc = b.addTranslateC(.{
-        .root_source_file = stbi_h_path,
-        .target = target,
-        .optimize = optimize,
-    });
-    stbi_tc.defineCMacro("STBI_ONLY_PNG", null);
-    const stbi_mod = stbi_tc.createModule();
-    stbi_mod.addCSourceFile(.{
-        .file = stbi_h_path,
-        .flags = &.{
-            "-std=c11",
-            "-DSTB_IMAGE_IMPLEMENTATION",
-            "-DSTBI_ONLY_PNG",
-        },
-        .language = .c,
-    });
-
     const cgltf_dep = b.dependency("cgltf", .{});
     const cgltf_h_path = cgltf_dep.path("cgltf.h");
     const cgltf_tc = b.addTranslateC(.{
@@ -183,21 +215,11 @@ pub fn build(b: *std.Build) void {
         .language = .c,
     });
 
-    const hmm_dep = b.dependency("hmm", .{});
-    const hmm_h_path = hmm_dep.path("HandmadeMath.h");
-    const hmm_tc = b.addTranslateC(.{
-        .root_source_file = hmm_h_path,
+    const qoi_dep = b.dependency("qoi", .{
         .target = target,
         .optimize = optimize,
     });
-    const hmm_mod = hmm_tc.createModule();
-    hmm_mod.addCSourceFile(.{
-        .file = hmm_h_path,
-        .flags = &.{
-            "-std=c11",
-        },
-        .language = .c,
-    });
+    const qoi_mod = qoi_dep.module("qoi");
 
     const sokol_dep = b.dependency("sokol", .{
         .target = target,
@@ -223,25 +245,6 @@ pub fn build(b: *std.Build) void {
     const sokol_shdc_bin_path = sokol_tools_bin_dep.path(sokol_shdc_bin_subpath);
 
     // Compile shader
-    const sokol_backend = sokol_bld.resolveSokolBackend(sokol_backend_hint, target.result);
-    const shader_lang: ShaderLanguage = switch (sokol_backend) {
-        .metal => switch (shader_lang_hint) {
-            .metal_macos, .metal_ios, .metal_sim => |lang| lang,
-            else => if (target_os == .macos) .metal_macos else .metal_ios,
-        },
-        .d3d11 => switch (shader_lang_hint) {
-            .hlsl4, .hlsl5 => |lang| lang,
-            else => .hlsl5,
-        },
-        .gles3 => .glsl300es,
-        .wgpu => .wgsl,
-        .gl => switch (shader_lang_hint) {
-            .glsl410, .glsl430 => |lang| lang,
-            else => .glsl430,
-        },
-        else => unreachable,
-    };
-
     const sokol_shdc_cmd = std.Build.Step.Run.create(b, "sokol-shdc");
     sokol_shdc_cmd.addFileArg(sokol_shdc_bin_path);
     sokol_shdc_cmd.addPrefixedFileArg("--input=", b.path("src/render/shader.glsl"));
@@ -253,14 +256,9 @@ pub fn build(b: *std.Build) void {
         b.pathJoin(&.{ "gen", @tagName(shader_lang), "shader.zig" }),
     );
 
-    const sokol_shdc_step = b.step("sokol-shdc", "Compile shader to Zig code");
+    const sokol_shdc_step = b.step("shdc", "Compile shader to Zig code");
     sokol_shdc_step.dependOn(&sokol_shdc_cmd.step);
     sokol_shdc_step.dependOn(&sokol_shdc_install_file.step);
-
-    // Install game data
-    // const data_dir = std.fs.openDirAbsolute(data_path_abs, .{}) catch
-    //     @panic("cannot open data directory");
-    // defer data_dir.close();
 
     // Declare modules and artifacts
     const shader_mod = b.createModule(.{
@@ -270,35 +268,39 @@ pub fn build(b: *std.Build) void {
     });
     shader_mod.addImport("sokol", sokol_mod);
 
-    const dep_imports = [_]std.Build.Module.Import{
-        .{ .name = "sokol", .module = sokol_mod },
-        .{ .name = "stbi", .module = stbi_mod },
-        .{ .name = "cgltf", .module = cgltf_mod },
-        .{ .name = "shader", .module = shader_mod },
-    };
     const internal_imports = [_]std.Build.Module.Import{
+        createImport(b, "geo", optimize, target),
         createImport(b, "State", optimize, target),
         // createImport(b, "entities", optimize, target),
         // createImport(b, "game", optimize, target),
         createImport(b, "stdx", optimize, target),
-        createImport(b, "geo", optimize, target),
     };
-    crossAddImports(&dep_imports, &internal_imports);
-
+    const external_imports = [_]std.Build.Module.Import{
+        .{ .name = "sokol", .module = sokol_mod },
+        .{ .name = "cgltf", .module = cgltf_mod },
+        .{ .name = "qoi", .module = qoi_mod },
+        .{ .name = "shader", .module = shader_mod },
+    };
+    addAllImports(&internal_imports, &external_imports);
     addImportTests(b, &internal_imports);
+
+    // required to map shader primitives to our types
+    assert(std.mem.eql(u8, "geo", internal_imports[0].name));
+    shader_mod.addImport("geo", internal_imports[0].module);
+
+    const imports = std.mem.concat(
+        b.allocator,
+        std.Build.Module.Import,
+        &.{ &internal_imports, &external_imports },
+    ) catch @panic("OOM");
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .optimize = optimize,
         .target = target,
-        .imports = &internal_imports,
+        .imports = imports,
     });
     exe_mod.addOptions("options", runtime_options);
-    exe_mod.addImport("stbi", stbi_mod);
-    exe_mod.addImport("cgltf", cgltf_mod);
-    exe_mod.addImport("sokol", sokol_mod);
-    exe_mod.addImport("shader", shader_mod);
-    exe_mod.addImport("hmm", hmm_mod);
 
     b.getInstallStep().dependOn(&sokol_shdc_cmd.step);
 
@@ -322,13 +324,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &internal_imports,
+        .imports = imports,
     });
-    exe_unit_tests_mod.addImport("stbi", stbi_mod);
-    exe_unit_tests_mod.addImport("cgltf", cgltf_mod);
-    exe_unit_tests_mod.addImport("sokol", sokol_mod);
-    exe_unit_tests_mod.addImport("shader", shader_mod);
-    exe_mod.addImport("hmm", hmm_mod);
 
     const exe_unit_tests = b.addTest(.{
         .root_module = exe_unit_tests_mod,
@@ -363,18 +360,13 @@ fn addImports(
         module.addImport(import.name, import.module);
     }
 }
-
-fn crossAddImports(
-    lhs: []const std.Build.Module.Import,
-    rhs: []const std.Build.Module.Import,
+fn addAllImports(
+    internal: []const std.Build.Module.Import,
+    external: []const std.Build.Module.Import,
 ) void {
-    for (lhs) |limp| {
-        addImports(limp.module, lhs);
-        addImports(limp.module, rhs);
-    }
-    for (rhs) |rimp| {
-        addImports(rimp.module, lhs);
-        addImports(rimp.module, rhs);
+    for (internal) |import| {
+        addImports(import.module, internal);
+        addImports(import.module, external);
     }
 }
 
@@ -398,15 +390,15 @@ fn buildNativeExe(b: *std.Build, exe_mod: *std.Build.Module) *std.Build.Step.Run
     const target = exe_mod.resolved_target.?;
 
     const target_os = target.result.os.tag;
-    const target_is_android = target.result.abi.isAndroid();
-    const target_is_mobile = (target_is_android or target_os == .ios or target_os == .emscripten);
-    const optimize_is_safe = (optimize == .Debug or optimize == .ReleaseSafe);
+    const is_android = target.result.abi.isAndroid();
+    const is_mobile = (is_android or target_os == .ios or target_os == .emscripten);
+    const is_safe = (optimize == .Debug or optimize == .ReleaseSafe);
 
     const exe = b.addExecutable(.{
         .name = app_name,
         .root_module = exe_mod,
         .strip = ((optimize == .ReleaseSmall) or
-            (!optimize_is_safe and target_is_mobile)),
+            (!is_safe and is_mobile)),
         .single_threaded = false,
     });
     b.installArtifact(exe);
@@ -429,12 +421,12 @@ fn buildWebExe(
     const optimize = exe_mod.optimize.?;
     const target = exe_mod.resolved_target.?;
 
-    const optimize_is_safe = (optimize == .Debug or optimize == .ReleaseSafe);
+    const is_safe = (optimize == .Debug or optimize == .ReleaseSafe);
 
     const lib = b.addStaticLibrary(.{
         .name = app_name,
         .root_module = exe_mod,
-        .strip = !optimize_is_safe,
+        .strip = !is_safe,
         .single_threaded = false,
     });
     const emsdk = sokol_dep.builder.dependency("emsdk", .{});
@@ -454,4 +446,7 @@ fn buildWebExe(
     run_cmd.step.dependOn(&link_step.step);
 
     return run_cmd;
+}
+fn fmtBool(value: bool) []const u8 {
+    return if (value) "true" else "false";
 }

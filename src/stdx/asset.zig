@@ -571,43 +571,29 @@ pub const Manager = struct {
 // Contexts
 
 pub const Texture = struct {
-    width: u16,
-    height: u16,
-    channels: u16,
-    sprite_row_count: u8,
-    sprite_col_count: u8,
-    data: []u8,
+    image: qoi.Image,
 
-    pub const Error = error{Stbi};
+    pub const Error = qoi.DecodeError;
 
-    const stbi = @import("stbi");
+    const qoi = @import("qoi");
 
-    pub fn load(memory: []const u8) Texture.Error!Texture {
-        var width: c_int, var height: c_int, var channels: c_int = undefined;
-        const data_raw: [*]u8 = stbi.stbi_load_from_memory(
-            memory.ptr,
-            @intCast(memory.len),
-            &width,
-            &height,
-            &channels,
-            0,
-        ) orelse {
-            @branchHint(.cold);
-            std.log.scoped(.stbi).err("image load failed: {s}", .{
-                stbi.stbi_failure_reason() orelse "no reason provided",
-            });
-            return Texture.Error.Stbi;
+    pub fn load(allocator: Allocator, memory: []const u8) Texture.Error!Texture {
+        const image = qoi.decodeBuffer(allocator, memory) catch |err| switch (err) {
+            .InvalidData => {
+                log.err("image load failed, found invalid data", .{});
+                return .{ .image = qoi.Image{
+                    .width = 0,
+                    .height = 0,
+                    .pixels = &.{},
+                    .colorspace = .linear,
+                } };
+            },
+            else => return err,
         };
-        const data = data_raw[0..(width * height * channels)];
-        return Texture{
-            .width = @intCast(width),
-            .height = @intCast(height),
-            .channels = @intCast(channels),
-            .data = data,
-        };
+        return .{ .image = image };
     }
-    pub fn unload(texture: *Texture) void {
-        stbi.stbi_image_free(texture.data.ptr);
+    pub fn unload(texture: *Texture, allocator: Allocator) void {
+        texture.image.deinit(allocator);
         texture.* = undefined;
     }
 };

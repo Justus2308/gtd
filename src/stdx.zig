@@ -1,6 +1,7 @@
 const std = @import("std");
 const math = std.math;
 const mem = std.mem;
+const testing = std.testing;
 
 const assert = std.debug.assert;
 const expect = std.testing.expext;
@@ -107,6 +108,37 @@ pub fn countDecls(comptime T: type, comptime options: CountDeclsOptions) comptim
     return count;
 }
 
+fn ArrayInitType(comptime Array: type) type {
+    const array_info = switch (@typeInfo(Array)) {
+        .array => |array| array,
+        else => |info| @compileError(std.fmt.comptimePrint(
+            "needs 'Array', got '{s}'",
+            @typeName(info),
+        )),
+    };
+    return []const struct { usize, array_info.child };
+}
+pub fn zeroInitArray(comptime Array: type, init: ArrayInitType(Array)) Array {
+    var array: Array = std.mem.zeroes(Array);
+    for (init) |val| {
+        array[val.@"0"] = val.@"1";
+    }
+    return array;
+}
+
 test {
-    std.testing.refAllDeclsRecursive(@This());
+    testing.refAllDeclsRecursive(@This());
+}
+
+test zeroInitArray {
+    const Array = [8]u8;
+    const array = zeroInitArray(Array, &.{
+        .{ 4, 128 },
+        .{ 2, 16 },
+        .{ 7, 255 },
+    });
+    const expected = Array{
+        0, 0, 16, 0, 128, 0, 0, 255,
+    };
+    try testing.expectEqualSlices(u8, &expected, &array);
 }

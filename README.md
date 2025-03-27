@@ -42,12 +42,12 @@ zig build --help
 - Windows (x86-64)
 
 ### Supported Targets:
-- Linux (x86-64/aarch64)
+- Linux (most common desktop arches)
 - macOS (x86-64/aarch64)
-- Windows (x86-64/aarch64)
+- Windows (x86-64/x86/aarch64)
 - iOS (aarch64)
 - Emscripten (wasm32)
-- *soon&#8482;:* Android (aarch64)
+- *soon&#8482;:* Android (aarch64/arm)
 
 ## References
 

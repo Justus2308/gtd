@@ -6,54 +6,64 @@
 @ctype mat2 linalg.m2f32.M
 @ctype mat4 linalg.m4f32.M
 
-// 'bytes' layout:
-// x: int, texture index/slot
 
 @vs vs_default
 @glsl_options flip_vert_y
 
-in vec3 in_pos;
-in vec4 in_color;
-in vec2 in_uv;
-in vec2 in_uv_offset;
-in vec2 in_bytes;
+layout(binding=0) uniform vs_params {
+    mat4 mvp;
+};
 
-out vec4 color;
+in vec3 in_pos;
+in vec2 in_uv;
+in vec4 in_color;
+in vec4 in_extra;
+
 out vec2 uv;
-out vec2 bytes;
+out vec4 color;
+out vec4 extra;
 
 void main() {
-    gl_Position = vec4(in_pos, 1.0);
+    gl_Position = mvp * vec4(in_pos, 1.0);
+    gl_Position = vec4(in_pos.xy, 0.5, 1.0);
+    uv = in_uv;
     color = in_color;
-    uv = in_uv + in_uv_offset;
+    extra = in_extra;
 }
-
 @end
 
 @fs fs_default
 
-layout(binding=0) uniform texture2D tex_atlas;
-layout(binding=1) uniform texture2D tex_default;
-layout(binding=2) uniform texture2D tex_font;
 layout(binding=0) uniform sampler smp;
+layout(binding=0) uniform texture2DArray tex_array;
+layout(binding=1) uniform texture2D tex_quads;
 
-in vec4 color;
 in vec2 uv;
-in vec2 bytes;
+in vec4 color;
+in vec4 extra;
 
 out vec4 out_color;
 
 void main() {
-    int tex_index = int(bytes.x);
+    // if (extra.x > 0) {
+    //     vec3 uvw = vec3(uv, extra.x);
+    //     if (extra.y > 0) {
+    //         // is_text
+    //         out_color.a = texture(sampler2DArray(tex_array, smp), uvw).r;
+    //     } else {
+    //         // tex_index
+    //         out_color = texture(sampler2DArray(tex_array, smp), uvw);
+    //     }
+    // } else if (extra.z > 0) {
+    //     // is_quads
+    //     out_color = texture(sampler2D(tex_quads, smp), uv);
+    // } else {
+    //     // default
+    //     out_color = vec4(1.0);
+    // }
+    // out_color *= color;
 
-    if (tex_index == 0) {
-        out_color = texture(sampler2D(tex_atlas, smp), uv);
-    } else if (tex_index == 1) {
-        out_color = texture(sampler2D(tex_default, smp), uv);
-    } else if (tex_index == 2) {
-        out_color.rgb = vec3(1.0);
-        out_color.a = texture(sampler2D(tex_font, smp), uv).r;
-    }
+    out_color = texture(sampler2D(tex_quads, smp), uv);
     out_color *= color;
 }
 @end
@@ -61,40 +71,43 @@ void main() {
 @program default vs_default fs_default
 
 
-@vs vs_inst
+// Quad shader optimized for simplicity.
+// Can only draw sprites from texture atlas.
+// Renders to offscreen target.
+
+@vs vs_quad
 @glsl_options flip_vert_y
+@glsl_options fixup_clipspace
 
 in vec2 in_pos;
-in vec2 in_pos_offset;
-in vec2 in_scale;
-in vec4 in_color;
 in vec2 in_uv;
+in vec4 in_color;
 
-out vec4 color;
 out vec2 uv;
+out vec4 color;
 
 void main() {
-    gl_Position = vec4(((in_pos + in_pos_offset) * in_scale), 0.5, 1.0);
-    color = in_color;
+    gl_Position = vec4(in_pos, 0.5, 1.0);
     uv = in_uv;
+    color = in_color;
 }
 @end
 
-@fs fs_inst
+@fs fs_quad
 
-layout(binding=0) uniform texture2D tex_atlas;
 layout(binding=0) uniform sampler smp;
+layout(binding=2) uniform texture2D tex_atlas;
 
-in vec4 color;
 in vec2 uv;
+in vec4 color;
 
 out vec4 out_color;
 
 void main() {
-    out_color = texture(sampler2D(tex_atlas, smp), uv);
-    out_color *= color;
+    // out_color = texture(sampler2D(tex_atlas, smp), uv);
+    // out_color *= color;
+    out_color = color;
 }
-
 @end
 
-@program inst vs_inst fs_inst
+@program quad vs_quad fs_quad

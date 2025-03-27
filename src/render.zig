@@ -33,9 +33,6 @@ pub fn runSokolApp(window_title: [:0]const u8, window_width: i32, window_height:
         .window_title = window_title,
         .icon = .{ .sokol_default = true },
         .logger = .{ .func = sokol.log.func },
-        .allocator = .{
-            .alloc_fn = 
-        },
     });
 }
 

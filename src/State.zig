@@ -24,7 +24,9 @@ pub fn preinit() Allocator.Error!*State {
     // init allocator (this needs to happen before sokol init
     // because we have to have a pointer to `State` by then)
     var allocator_ctx = if (is_debug) DebugAllocator{} else {};
-    const allocator = if (is_debug)
+    const allocator = if (is_test)
+        testing.allocator
+    else if (is_debug)
         allocator_ctx.allocator()
     else if (is_wasm)
         std.heap.wasm_allocator
@@ -62,8 +64,9 @@ pub fn deinit(state: *State) void {
     }
 }
 
-pub fn update(state: *State, dt: f64) !void {
-    _ = .{ state, dt };
+pub fn update(state: *State, dt_fp: f64) !void {
+    const dt: u64 = @intFromFloat(dt_fp);
+    state.render.update(dt);
 }
 
 const asset_sub_path = if (builtin.is_test) "test/assets" else "assets";
@@ -76,6 +79,7 @@ const std = @import("std");
 const stdx = @import("stdx");
 const fs = std.fs;
 const mem = std.mem;
+const testing = std.testing;
 const Allocator = mem.Allocator;
 const asset = stdx.asset;
 const DebugAllocator = std.heap.DebugAllocator(.{ .thread_safe = true });
@@ -83,5 +87,6 @@ const Dir = fs.Dir;
 const ThreadPool = stdx.ThreadPool;
 const assert = std.debug.assert;
 
+const is_test = builtin.is_test;
 const is_debug = (builtin.mode == .Debug);
 const is_wasm = builtin.target.cpu.arch.isWasm();

@@ -13,17 +13,13 @@
             .url = "https://github.com/floooh/sokol-tools-bin/archive/master.tar.gz",
             .hash = "N-V-__8AAPiO9QNzW747-YsdWwiiBaNLStW1ar0uVCgmxS4D",
         },
-        .stb = .{
-            .url = "https://github.com/nothings/stb/archive/master.tar.gz",
-            .hash = "N-V-__8AAAokTgCCkRqtrvPINtODP3xgOG7h7kb-_7bFR4X3",
-        },
         .cgltf = .{
             .url = "https://github.com/jkuhlmann/cgltf/archive/master.tar.gz",
             .hash = "N-V-__8AAKFjBABZzn84N4iiLQyNQSMVsv5XBJSvZTPcQL2H",
         },
-        .hmm = .{
-            .url = "https://github.com/HandmadeMath/HandmadeMath/archive/master.tar.gz",
-            .hash = "N-V-__8AAKcABACNMJ-W931ffS-WKtSh_CIihaf1Y3rlPBF2",
+        .qoi = .{
+            .url = "https://github.com/ikskuh/zig-qoi/archive/master.tar.gz",
+            .hash = "qoi-0.1.0-5Hmo8rpqAAD1pnE4OYX2tdvxLupff9nkjBGxuxVNtky8",
         },
     },
     .paths = .{

@@ -14,7 +14,7 @@ const panic = std.debug.panic;
 
 const window_width = 1280;
 const window_height = 720;
-const window_title = "GTD";
+const window_title = "Goons TD";
 
 pub fn main() !void {
     const desc = makeSokolDesc() catch @panic("OOM");
@@ -83,19 +83,3 @@ pub fn event(event_: ?*const sokol.app.Event, userdata: ?*anyopaque) callconv(.c
     //     .INVALID => event_log.info("encountered invalid event", .{}),
     // }
 }
-
-// TODO move
-pub const palette = struct {
-    const data = std.enums.directEnumArray(Name, gfx.Color, 0, .{
-        .white = .{ .r = 1, .g = 1, .b = 1, .a = 1 },
-        .black = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
-    });
-    pub const Name = enum(usize) {
-        white = 0,
-        black,
-    };
-
-    pub inline fn get(comptime name: palette.Name) gfx.Color {
-        comptime return palette.data[@intFromEnum(name)];
-    }
-};
