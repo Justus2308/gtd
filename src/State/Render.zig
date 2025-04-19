@@ -10,43 +10,67 @@ passes: struct {
         bindings: gfx.Bindings,
     },
 },
+pipeline_cache: PipelineCache,
+sampler_cache: SamplerCache,
 
 const Render = @This();
+
+pub const backend = @import("Render/backend.zig");
+
+pub const PipelineHashable = struct {
+    index_type: gfx.IndexType,
+    uv_format: gfx.VertexFormat,
+    primitive_type: gfx.PrimitiveType,
+    shader: gfx.Shader,
+    winding: gfx.FaceWinding,
+};
+pub const PipelineCache = std.AutoHashMap(PipelineHashable, gfx.Pipeline);
+
+pub const SamplerHashable = struct {
+    min_filter: gfx.Filter,
+    mag_filter: gfx.Filter,
+    wrap_u: gfx.Wrap,
+    wrap_v: gfx.Wrap,
+    wrap_w: gfx.Wrap,
+    compare: gfx.CompareFunc,
+};
+pub const SamplerCache = std.AutoHashMap(SamplerHashable, gfx.Sampler);
 
 const VertexPos = v3f32.V;
 const VertexInfo = extern struct {
     _: void align(4) = {},
-    uv: [2]u16,
+    uv_ext: [4]u16,
     color: [4]u8,
-    extra: extern struct {
-        tex_index: u8,
-        is_text: u8,
-        is_quads: u8,
-        _pad: u8 = undefined,
-    },
 
-    pub const Kind = union(enum) {
-        image: u16,
-        text: u16,
-        quad,
-    };
-
-    pub fn init(comptime kind: Kind, uv: v2f32.V, color: Color) VertexInfo {
+    pub fn init(uv: v2f32.V, layer: u8, color: Color) VertexInfo {
         const uv_factor = comptime v2f32.splat(@floatFromInt(std.math.maxInt(u16)));
-        const info = VertexInfo{
-            .uv = @as(@Vector(2, u16), @intFromFloat(uv * uv_factor)),
+        const uv_denorm: @Vector(2, u16) = @intFromFloat(uv * uv_factor);
+        return VertexInfo{
+            .uv_ext = .{ uv_denorm[0], uv_denorm[1], layer, 0 },
             .color = color.value(),
-            .extra = .{
-                .tex_index = switch (kind) {
-                    .image, .text => |idx| idx,
-                    .quad => 0,
-                },
-                .is_text = @intFromBool(std.meta.activeTag(kind) == .text),
-                .is_quads = @intFromBool(kind == .quad),
-            },
         };
-        return info;
     }
+    pub fn quads(color: Color) [4]VertexInfo {
+        var verts: [4]VertexInfo = .{
+            .init(.{ 1, 1 }, 0, color),
+            .init(.{ 1, 0 }, 0, color),
+            .init(.{ 0, 0 }, 0, color),
+            .init(.{ 0, 1 }, 0, color),
+        };
+        inline for (&verts) |*info| {
+            info.uv_ext[3] = 1;
+        }
+        return verts;
+    }
+
+    // pub const quads = blk: {
+    //     var quads: [4]VertexInfo = .{
+    //         .init(.{ 1, 1 }, 0, .white),
+    //         .init(.{ 1, 0 }, 0, .white),
+    //         .init(.{ 0, 0 }, 0, .white),
+    //         .init(.{ 0, 1 }, 0, .white),
+    //     };
+    // };
 
     comptime {
         assert(@sizeOf(@This()) == 12);
@@ -66,16 +90,17 @@ const QuadInfo = extern struct {
     },
 
     pub fn init(uv: [4]v2f32.V, color: Color) QuadInfo {
-        const UvVec = @Vector(8, f32);
-        const uv_factor: UvVec = comptime @splat(@floatFromInt(std.math.maxInt(u16)));
-        const uv_vec = @as(UvVec, @bitCast(uv));
-        const uv_vec_denorm: @Vector(8, u16) = @intFromFloat(uv_vec * uv_factor);
+        const uv_factor = comptime v2f32.splat(@floatFromInt(std.math.maxInt(u16)));
 
-        const CastVec = @Vector(4, u32);
-        const uv_vec_denorm_cast: CastVec = @bitCast(uv_vec_denorm);
-        const color_vec_cast: CastVec = @splat(@intFromEnum(color));
-        const comb_vec = std.simd.interlace(.{ uv_vec_denorm_cast, color_vec_cast });
-        return @bitCast(comb_vec);
+        var quad_info: QuadInfo = undefined;
+        inline for (0..4) |i| {
+            const uv_denorm: @Vector(2, u16) = @intFromFloat(uv[i] * uv_factor);
+            quad_info.data[i] = .{
+                .uv = uv_denorm,
+                .color = color.value(),
+            };
+        }
+        return quad_info;
     }
 };
 
@@ -83,7 +108,6 @@ const initial_buffer_size = 16 << 10 << 10;
 const max_quad_count = 8 << 10;
 
 pub fn init(allocator: Allocator) Render {
-    _ = allocator;
     gfx.setup(.{
         .shader_pool_size = stdx.countDecls(shader, .{
             .type = .{ .id = .@"fn" },
@@ -111,6 +135,10 @@ pub fn init(allocator: Allocator) Render {
 
     const quad_sample_count = 1;
     const quad_pixel_format = gfx.PixelFormat.RGBA8;
+
+    const image_array = gfx.makeImage(.{
+        .type = .ARRAY,
+    });
 
     var quad_offscreen_desc = gfx.ImageDesc{
         .render_target = true,
@@ -238,9 +266,8 @@ pub fn init(allocator: Allocator) Render {
     const default_pipeline = gfx.makePipeline(.{
         .layout = .{ .attrs = stdx.zeroInitArray(@FieldType(gfx.VertexLayoutState, "attrs"), &.{
             .{ shader.ATTR_default_in_pos, .{ .format = .FLOAT3, .buffer_index = 0 } },
-            .{ shader.ATTR_default_in_uv, .{ .format = .USHORT2N, .buffer_index = 1 } },
+            .{ shader.ATTR_default_in_uv_ext, .{ .format = .USHORT4N, .buffer_index = 1 } },
             .{ shader.ATTR_default_in_color, .{ .format = .UBYTE4N, .buffer_index = 1 } },
-            .{ shader.ATTR_default_in_extra, .{ .format = .UBYTE4N, .buffer_index = 1 } },
         }) },
         .shader = default_shader,
         .index_type = .UINT16,
@@ -253,6 +280,8 @@ pub fn init(allocator: Allocator) Render {
     });
     render.passes.default.pipeline = default_pipeline;
 
+    render.pipeline_cache = .init(allocator);
+    render.sampler_cache = .init(allocator);
     return render;
 }
 
@@ -292,10 +321,10 @@ pub fn update(render: *Render, dt: u64) void {
         .{ -0.5, 0.5, 0.5 },
     }));
     gfx.updateBuffer(render.passes.default.bindings.vertex_buffers[1], gfx.asRange(&[_]VertexInfo{
-        .init(.quad, .{ 1, 1 }, .white),
-        .init(.quad, .{ 1, 0 }, .white),
-        .init(.quad, .{ 0, 0 }, .white),
-        .init(.quad, .{ 0, 1 }, .white),
+        .init(.{ 1, 1 }, 0, .{}),
+        .init(.{ 1, 0 }, 0, .{}),
+        .init(.{ 0, 0 }, 0, .{}),
+        .init(.{ 0, 1 }, 0, .{}),
     }));
     gfx.updateBuffer(render.passes.default.bindings.index_buffer, gfx.asRange(&[_]u16{
         0, 1, 3, 1, 2, 3,

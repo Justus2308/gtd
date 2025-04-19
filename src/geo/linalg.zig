@@ -324,6 +324,25 @@ pub fn mat(comptime dim: comptime_int, comptime T: type) type {
             return m;
         }
 
+        pub const determinant = switch (dim) {
+            4 => determinant4,
+            else => determinantUnimpl,
+        };
+        inline fn determinant4(m: M) S {
+            const v3 = vec(3, S);
+
+            const c01 = v3.cross(m[0..][0..3].*, m[4..][0..3].*);
+            const c23 = v3.cross(m[8..][0..3].*, m[12..][0..3].*);
+            const b10 = v3.scale(m[0..][0..3].*, m[4..][3]) - v3.scale(m[4..][0..3].*, m[0..][3]);
+            const b23 = v3.scale(m[8..][0..3].*, m[12..][3]) - v3.scale(m[12..][0..3].*, m[8..][3]);
+
+            return v3.dot(c01, b23) + v3.dot(c23, b10);
+        }
+        fn determinantUnimpl(m: M) noreturn {
+            _ = m;
+            @panic("determinant is only implemented for dim=4");
+        }
+
         pub const eql = mat_as_vec.eql;
         pub const approxEqAbs = mat_as_vec.approxEqAbs;
         pub const approxEqRel = mat_as_vec.approxEqRel;

@@ -65,10 +65,10 @@ pub fn build(b: *std.Build) void {
         else => true,
     }) @panic("unsupported target: use 'wasm32-emscripten' to target web");
 
-    const target_category: TargetCategory = cat: {
+    const target_category: TargetCategory = category: {
         switch (target_os) {
             .linux => if (target.result.abi.isAndroid()) switch (target_arch) {
-                .aarch64, .arm => break :cat .android,
+                .aarch64, .arm => break :category .android,
                 else => {},
             } else switch (target_arch) {
                 .x86_64,
@@ -80,26 +80,26 @@ pub fn build(b: *std.Build) void {
                 .powerpc64,
                 .powerpc64le,
                 .powerpc,
-                => break :cat .linux,
+                => break :category .linux,
                 else => {},
             },
             .macos => switch (target_arch) {
-                .x86_64, .aarch64 => break :cat .macos,
+                .x86_64, .aarch64 => break :category .macos,
                 else => {},
             },
             .windows => switch (target_arch) {
-                .x86_64, .aarch64, .x86 => break :cat .windows,
+                .x86_64, .aarch64, .x86 => break :category .windows,
                 else => {},
             },
-            .ios => if (target_arch == .aarch64) break :cat .ios,
-            .emscripten => if (target_arch == .wasm32) break :cat .web,
+            .ios => if (target_arch == .aarch64) break :category .ios,
+            .emscripten => if (target_arch == .wasm32) break :category .web,
             else => {},
         }
         log.warn(
             "building for potentially unstable target '{s}'",
             .{target.result.linuxTriple(b.allocator) catch @panic("OOM")},
         );
-        break :cat .other;
+        break :category .other;
     };
 
     if (target_category == .android) {
@@ -198,28 +198,29 @@ pub fn build(b: *std.Build) void {
     runtime_options.addOption(bool, "is_use_compute", is_use_compute);
 
     // Configure dependencies
-    const cgltf_dep = b.dependency("cgltf", .{});
-    const cgltf_h_path = cgltf_dep.path("cgltf.h");
-    const cgltf_tc = b.addTranslateC(.{
-        .root_source_file = cgltf_h_path,
+    const zgltf_dep = b.dependency("zgltf", .{
         .target = target,
         .optimize = optimize,
     });
-    const cgltf_mod = cgltf_tc.createModule();
-    cgltf_mod.addCSourceFile(.{
-        .file = cgltf_h_path,
-        .flags = &.{
-            "-std=c11",
-            "-DCGLTF_IMPLEMENTATION",
-        },
-        .language = .c,
-    });
+    const zgltf_mod = zgltf_dep.module("zgltf");
 
-    const qoi_dep = b.dependency("qoi", .{
+    const zigimg_dep = b.dependency("zigimg", .{
         .target = target,
         .optimize = optimize,
     });
-    const qoi_mod = qoi_dep.module("qoi");
+    const zigimg_mod = zigimg_dep.module("zigimg");
+
+    const s2s_dep = b.dependency("s2s", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const s2s_mod = s2s_dep.module("s2s");
+
+    const zalgebra_dep = b.dependency("zalgebra", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zalgebra_mod = zalgebra_dep.module("zalgebra");
 
     const sokol_dep = b.dependency("sokol", .{
         .target = target,
@@ -277,16 +278,14 @@ pub fn build(b: *std.Build) void {
     };
     const external_imports = [_]std.Build.Module.Import{
         .{ .name = "sokol", .module = sokol_mod },
-        .{ .name = "cgltf", .module = cgltf_mod },
-        .{ .name = "qoi", .module = qoi_mod },
+        .{ .name = "zgltf", .module = zgltf_mod },
+        .{ .name = "zigimg", .module = zigimg_mod },
+        .{ .name = "s2s", .module = s2s_mod },
+        .{ .name = "zalgebra", .module = zalgebra_mod },
         .{ .name = "shader", .module = shader_mod },
     };
     addAllImports(&internal_imports, &external_imports);
     addImportTests(b, &internal_imports);
-
-    // required to map shader primitives to our types
-    assert(std.mem.eql(u8, "geo", internal_imports[0].name));
-    shader_mod.addImport("geo", internal_imports[0].module);
 
     const imports = std.mem.concat(
         b.allocator,

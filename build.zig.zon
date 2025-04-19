@@ -5,21 +5,38 @@
     .fingerprint = 0xb3551d049a7d1315,
 
     .dependencies = .{
+        // Application Dependencies
         .sokol = .{
             .url = "https://github.com/floooh/sokol-zig/archive/master.tar.gz",
-            .hash = "sokol-0.1.0-pb1HK5NgNgDWuuAB-CpH2rAjRKIcuONrrFVDmyJaW4Ly",
+            .hash = "sokol-0.1.0-pb1HK5mGLABB7_Vt66xb8nbn8sJN_ULvd4v0wg8WypJ_",
         },
+        .zigimg = .{
+            .url = "https://github.com/zigimg/zigimg/archive/master.tar.gz",
+            .hash = "zigimg-0.1.0-AAAAAL0yEQCoz5-D4AMjsxi8aMEbZy_RwEg4kgomlHBm",
+        },
+        .zgltf = .{
+            .url = "https://github.com/kooparse/zgltf/archive/main.tar.gz",
+            .hash = "zgltf-0.1.0-sX6QAtwJAgB_Qb8QNfJyvGVAVqsH8ABMmyDt6L4D_Cyw",
+        },
+        .s2s = .{
+            .url = "https://github.com/ziglibs/s2s/archive/master.tar.gz",
+            .hash = "s2s-0.0.1-qt8ajW97AADgZZjymAzXPnLV3sR2Fo0r4k7WGJkfftJ1",
+        },
+        .zalgebra = .{
+            .url = "https://github.com/kooparse/zalgebra/archive/main.tar.gz",
+            .hash = "zalgebra-0.0.0-aaiVSj5nAQDFe0Cnx-aoGE2HzVtg1Ij62auYZ6nxR9do",
+        },
+
+        // Tooling
         .sokol_tools_bin = .{
             .url = "https://github.com/floooh/sokol-tools-bin/archive/master.tar.gz",
             .hash = "N-V-__8AAPiO9QNzW747-YsdWwiiBaNLStW1ar0uVCgmxS4D",
+            // .lazy = true,
         },
-        .cgltf = .{
-            .url = "https://github.com/jkuhlmann/cgltf/archive/master.tar.gz",
-            .hash = "N-V-__8AAKFjBABZzn84N4iiLQyNQSMVsv5XBJSvZTPcQL2H",
-        },
-        .qoi = .{
-            .url = "https://github.com/ikskuh/zig-qoi/archive/master.tar.gz",
-            .hash = "qoi-0.1.0-5Hmo8rpqAAD1pnE4OYX2tdvxLupff9nkjBGxuxVNtky8",
+        .relacy = .{
+            .url = "https://github.com/dvyukov/relacy/archive/master.tar.gz",
+            .hash = "N-V-__8AAHVXDQCzShK1fJp23MiLJQYxM4IoxkG1iA5GUJIG",
+            .lazy = true,
         },
     },
     .paths = .{
@@ -28,8 +45,6 @@
         "assets",
         "src",
         "test",
-        // For example...
-        //"LICENSE",
-        //"README.md",
+        "LICENSE",
     },
 }
