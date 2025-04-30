@@ -1,5 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const game = @import("game");
+const render = @import("render");
 const sokol = @import("sokol");
 
 const mem = std.mem;
@@ -7,7 +9,6 @@ const audio = sokol.audio;
 const gfx = sokol.gfx;
 
 const Allocator = mem.Allocator;
-const State = @import("State");
 
 const assert = std.debug.assert;
 const panic = std.debug.panic;
@@ -34,7 +35,7 @@ fn sokolMain(argc: c_int, argv: [*][*]c_char) callconv(.c) sokol.app.Desc {
 }
 
 fn makeSokolDesc() Allocator.Error!sokol.app.Desc {
-    const state = try State.preinit();
+    const state = try game.State.preinit();
     return sokol.app.Desc{
         .init_userdata_cb = &init,
         .cleanup_userdata_cb = &cleanup,
@@ -45,7 +46,7 @@ fn makeSokolDesc() Allocator.Error!sokol.app.Desc {
         .fullscreen = true,
         .window_title = window_title,
         .icon = .{ .sokol_default = true },
-        .logger = .{ .func = &State.Render.sokolLog },
+        .logger = .{ .func = &render.Sokol.sokolLog },
         .win32_console_utf8 = true,
         .win32_console_attach = true,
         .user_data = state,
@@ -53,23 +54,23 @@ fn makeSokolDesc() Allocator.Error!sokol.app.Desc {
 }
 
 pub fn init(userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @alignCast(@ptrCast(userdata));
+    const state: *game.State = @alignCast(@ptrCast(userdata));
     state.init() catch @panic("OOM");
 }
 
 pub fn cleanup(userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @alignCast(@ptrCast(userdata));
+    const state: *game.State = @alignCast(@ptrCast(userdata));
     state.deinit();
 }
 
 pub fn frame(userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @alignCast(@ptrCast(userdata));
+    const state: *game.State = @alignCast(@ptrCast(userdata));
     const dt = sokol.app.frameDuration();
     state.update(dt) catch {};
 }
 
 pub fn event(event_: ?*const sokol.app.Event, userdata: ?*anyopaque) callconv(.c) void {
-    const state: *State = @alignCast(@ptrCast(userdata));
+    const state: *game.State = @alignCast(@ptrCast(userdata));
     _ = .{ state, event_ };
     // switch (event_.type) {
     //     .KEY_DOWN, .KEY_UP => events.handleKeyboardEvent(event.*),

@@ -12,26 +12,15 @@ const expect = std.testing.expext;
 const cache_line = std.atomic.cache_line;
 const target_os = builtin.target.os.tag;
 
-pub const asset = @import("stdx/asset.zig");
-pub const ThreadPool = @import("stdx/ThreadPool.zig");
-pub const integrate = @import("stdx/integrate.zig");
 pub const simd = @import("stdx/simd.zig");
 pub const StaticMultiArrayList = @import("stdx/static_multi_array_list.zig").StaticMultiArrayList;
 
-const memory_pool = @import("stdx/memory_pool.zig");
-pub const MemoryPoolUnmanaged = memory_pool.MemoryPoolUnmanaged;
-pub const MemoryPoolAlignedUnmanaged = memory_pool.MemoryPoolAlignedUnmanaged;
-pub const MemoryPoolExtraUnmanaged = memory_pool.MemoryPoolExtraUnmanaged;
+const chunk_allocator = @import("stdx/chunk_allocator.zig");
+pub const ChunkAllocator = chunk_allocator.ChunkAllocator;
+pub const ChunkAllocatorConfig = chunk_allocator.Config;
 
-pub const concurrent_hash_map = @import("stdx/concurrent_hash_map.zig");
-pub const ConcurrentStringHashMapUnmanaged = concurrent_hash_map.ConcurrentStringHashMapUnmanaged;
-pub const ConcurrentAutoHashMapUnmanaged = concurrent_hash_map.ConcurrentAutoHashMapUnmanaged;
-pub const ConcurrentHashMapUnmanaged = concurrent_hash_map.ConcurrentHashMapUnmanaged;
-pub const ConcurrentStringArrayHashMapUnmanaged = concurrent_hash_map.ConcurrentStringArrayHashMapUnmanaged;
-pub const ConcurrentAutoArrayHashMapUnmanaged = concurrent_hash_map.ConcurrentAutoArrayHashMapUnmanaged;
-pub const ConcurrentArrayHashMapUnmanaged = concurrent_hash_map.ConcurrentArrayHashMapUnmanaged;
-
-pub const ConcurrentMemoryPool = @import("stdx/concurrent_memory_pool.zig").ConcurrentMemoryPool;
+pub const integrate = @import("stdx/integrate.zig");
+pub const concurrent = @import("stdx/concurrent.zig");
 
 pub fn todo(comptime msg: []const u8) noreturn {
     @compileError("TODO: " ++ msg);
@@ -47,6 +36,45 @@ pub fn CacheLinePadded(comptime T: type) type {
             return .{ .data = data };
         }
     };
+}
+
+/// Wrap variables (e.g. struct fields) as 'immutable'.
+/// `verify_fn` will trigger an assertion if it evaluates
+/// to `false`.
+pub fn Immutable(comptime T: type, comptime verify_fn: fn (ok: bool) bool) type {
+    return struct {
+        do_not_access: T,
+
+        pub inline fn get(self: @This()) T {
+            return self.do_not_access;
+        }
+    };
+}
+
+/// Generate a struct that contains an array for each field in `T`.
+/// Use together with `std.MultiArrayList` for efficient storage.
+pub fn StructOfArrays(comptime T: type, comptime len: usize) type {
+    var info = switch (@typeInfo(T)) {
+        .@"struct" => |info| info,
+        else => @compileError("StructOfArrays only supports structs"),
+    };
+    var arrays: [info.fields.len]std.builtin.Type.StructField = undefined;
+    for (info.fields, &arrays) |field, *array| {
+        array.type = [len]field.type;
+    }
+    info.fields = &arrays;
+    return @Type(.{ .@"struct" = info });
+}
+/// Helper function to extract contiguous element from struct of arrays.
+pub fn atSoA(comptime Elem: type, soa: anytype, index: usize) Elem {
+    if (std.meta.activeTag(@typeInfo(@TypeOf(soa))) != .@"struct") {
+        @compileError("soa needs to be a struct");
+    }
+    var elem: Elem = undefined;
+    inline for (@typeInfo(Elem).@"struct".fields) |field| {
+        @field(elem, field.name) = @field(soa, field.name)[index];
+    }
+    return elem;
 }
 
 /// from `std.simd`

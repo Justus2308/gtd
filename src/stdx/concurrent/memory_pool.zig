@@ -10,12 +10,9 @@ pub const Options = struct {
 
 /// This is essentially an implementation of Timothy L. Harris's non-blocking
 /// linked list. (https://timharris.uk/papers/2001-disc.pdf)
-pub fn ConcurrentMemoryPool(comptime T: type, comptime options: Options) type {
+pub fn MemoryPool(comptime T: type, comptime options: Options) type {
     return struct {
-        /// Pointers need to be 1-aligned to make bit magic work.
-        /// All pointers that the user of this API interacts with
-        /// are always aligned to `alignment`.
-        free_list: std.atomic.Value(?*align(1) Node) align(alignment),
+        free_list: std.atomic.Value(Pointer) align(alignment),
 
         const Self = @This();
 
@@ -26,62 +23,61 @@ pub fn ConcurrentMemoryPool(comptime T: type, comptime options: Options) type {
         const alloc_size = @max(@sizeOf(T), @sizeOf(Node));
 
         const Node = struct {
-            next: ?*align(1) Node,
+            next: Pointer,
         };
-        const NodePtr = packed union {
-            raw: usize,
-            /// We can use the LSB to store information because all our pointers
-            /// are aligned to `node_alignment` which is always >1.
+
+        /// Uses the LSB to store information.
+        const Pointer = packed struct(usize) {
             is_deleted: bool,
-            /// is_deleted is part of these bits, so they are guarenteed to
-            /// differ between deleted and existing NodePtrs.
-            futex_bits: u32,
+            _: std.meta.Int(.unsigned, (@bitSizeOf(usize) - 1)),
 
-            pub fn fromPtr(ptr: ?*align(1) Node) NodePtr {
-                return .{ .raw = @intFromPtr(ptr) };
-            }
-            pub fn asPtr(node_ptr: NodePtr) ?*align(1) Node {
-                return @ptrFromInt(node_ptr.raw);
+            pub const nullptr: Pointer = @bitCast(@intFromPtr(@as(?*anyopaque, null)));
+
+            pub fn init(ptr: anytype) Pointer {
+                return @bitCast(@intFromPtr(ptr));
             }
 
-            // We need to use bitmasks here because changing the value of is_deleted
-            // directly is not guarenteed by the language spec (or in practice) to
-            // not clobber all other fields.
-            pub fn existing(node_ptr: NodePtr) *align(alignment) Node {
-                var ex = node_ptr.raw;
-                ex &= ~@as(usize, 1);
-                return @ptrFromInt(ex);
+            pub fn asNode(pointer: Pointer) *align(alignment) Node {
+                return @ptrFromInt(pointer.asAddr());
             }
-            pub fn deleted(node_ptr: NodePtr) *align(1) Node {
-                var del = node_ptr.raw;
-                del |= @as(usize, 1);
-                return @ptrFromInt(del);
+            pub fn asItem(pointer: Pointer) Item {
+                assert(!pointer.isNull());
+                return @ptrFromInt(pointer.asAddr());
+            }
+            pub fn asAddr(pointer: Pointer) usize {
+                return @bitCast(pointer);
             }
 
-            pub fn futexable(node_ptr: *const NodePtr) *const std.atomic.Value(u32) {
-                return @ptrCast(&node_ptr.futex_bits);
+            pub fn existing(pointer: Pointer) Pointer {
+                var ex = pointer;
+                ex.is_deleted = false;
+                return ex;
+            }
+            pub fn deleted(pointer: Pointer) Pointer {
+                var del = pointer;
+                del.is_deleted = true;
+                return del;
             }
 
-            pub fn isDeleted(node_ptr: NodePtr) bool {
-                return node_ptr.is_deleted;
+            pub fn futexable(pointer: *const Pointer) *const std.atomic.Value(u32) {
+                return @ptrCast(@as(*const u32, @ptrCast(@alignCast(pointer))));
             }
-            pub fn isNull(node_ptr: NodePtr) bool {
-                return (node_ptr.raw == 0);
+            pub fn futexBits(pointer: Pointer) u32 {
+                return @truncate(pointer.asAddr());
             }
 
-            comptime {
-                const deleted_node = NodePtr.fromPtr(null).deleted();
-                assert(@intFromPtr(deleted_node) == @as(usize, 1));
-
-                assert(alignment > 1);
-                assert(@bitSizeOf(NodePtr) == @bitSizeOf(*anyopaque));
+            pub fn isDeleted(pointer: Pointer) bool {
+                return pointer.is_deleted;
+            }
+            pub fn isNull(pointer: Pointer) bool {
+                return (pointer == nullptr);
             }
         };
 
-        pub const Pointer = *align(alignment) T;
+        pub const Item = *align(alignment) T;
 
         pub const empty = Self{
-            .free_list = .init(null),
+            .free_list = .init(.nullptr),
         };
 
         /// This function is NOT thread-safe.
@@ -90,27 +86,28 @@ pub fn ConcurrentMemoryPool(comptime T: type, comptime options: Options) type {
             for (0..capacity) |_| {
                 const item = try allocItem(gpa);
                 const node: *align(alignment) Node = @ptrCast(item);
-                node.next = head;
+                node.next = .init(head);
                 head = node;
             }
             return Self{
-                .free_list = .init(head),
+                .free_list = .init(.init(head)),
             };
         }
 
         /// This function is NOT thread-safe.
         pub fn deinit(self: *Self, gpa: Allocator) void {
-            while (self.free_list.raw) |node| {
+            while (self.free_list.raw.isNull() == false) {
+                const node = self.free_list.raw.asNode();
                 self.free_list.raw = node.next;
-                const item: Pointer = @ptrCast(@alignCast(node));
+                const item: Item = @ptrCast(@alignCast(node));
                 freeItem(gpa, item);
                 // std.debug.print("freed item: {*}\n", .{item});
             }
             self.* = undefined;
         }
 
-        pub fn create(self: *Self, gpa: Allocator) Allocator.Error!Pointer {
-            var head = NodePtr.fromPtr(self.free_list.load(.acquire));
+        pub fn create(self: *Self, gpa: Allocator) Allocator.Error!Item {
+            var head = self.free_list.load(.acquire);
             while (true) {
                 if (head.isNull()) {
                     // We don't have any free nodes left, allocate a new one.
@@ -122,58 +119,64 @@ pub fn ConcurrentMemoryPool(comptime T: type, comptime options: Options) type {
                 while (!head.isDeleted()) {
                     // Set the is_deleted bit
                     if (self.free_list.cmpxchgWeak(
-                        head.asPtr(),
+                        head,
                         head.deleted(),
                         .release,
                         .monotonic,
                     )) |new_head| {
-                        head = NodePtr.fromPtr(new_head);
+                        head = new_head;
                     } else {
-                        head = NodePtr.fromPtr(head.deleted());
+                        // Reload head to ensure that head.next is valid
+                        head = self.free_list.load(.acquire);
                     }
                 }
                 // Someone has successfully set the is_deleted bit, we can now
                 // remove the node from the list.
                 // Note that head cannot be null here because is_deleted is set.
+                const head_next = head.existing().asNode().next;
                 if (self.free_list.cmpxchgWeak(
-                    head.asPtr(),
-                    head.existing().next,
+                    head,
+                    head_next,
                     .release,
                     .acquire,
                 )) |new_head| {
-                    head = NodePtr.fromPtr(new_head);
+                    head = new_head;
                 } else {
                     // We have successfully removed head from the list.
                     // std.debug.print("popped head: {*}\n", .{head.existing()});
-                    return @ptrCast(head.existing());
+                    return head.existing().asItem();
                 }
             }
         }
 
-        pub fn destroy(self: *Self, ptr: Pointer) void {
-            var node: *align(alignment) Node = @ptrCast(ptr);
-            var head = NodePtr.fromPtr(self.free_list.load(.acquire));
+        pub fn destroy(self: *Self, item: Item) void {
+            var node: *align(alignment) Node = @ptrCast(item);
+            var head = self.free_list.load(.acquire);
             while (true) {
                 while (head.isDeleted()) {
                     // We are not allowed to push onto a deleted head,
-                    // so we wait until the thread removing head from
-                    // the list is done.
+                    // so we try to help in removing the current head
+                    // from the free list.
                     @branchHint(.unlikely);
-                    std.Thread.Futex.wait(head.futexable(), head.futex_bits);
-                    head = NodePtr.fromPtr(self.free_list.load(.monotonic));
+                    const head_next = head.existing().asNode().next;
+                    if (self.free_list.cmpxchgWeak(head, head_next, .release, .monotonic)) |new_head| {
+                        head = new_head;
+                    } else {
+                        head = self.free_list.load(.acquire);
+                    }
                 }
                 // We now have a head which is not currently being deleted,
                 // even though it might be null.
-                node.next = head.asPtr();
+                node.next = head;
                 if (self.free_list.cmpxchgWeak(
-                    head.asPtr(),
-                    node,
+                    head,
+                    .init(node),
                     .release,
                     .acquire,
                 )) |new_head| {
                     // head might have is_deleted set now, so we need to try
                     // again from the beginning.
-                    head = NodePtr.fromPtr(new_head);
+                    head = new_head;
                 } else {
                     // std.debug.print("pushed new head: {*}\n", .{node});
                     return;
@@ -181,11 +184,11 @@ pub fn ConcurrentMemoryPool(comptime T: type, comptime options: Options) type {
             }
         }
 
-        inline fn allocItem(gpa: Allocator) Allocator.Error!Pointer {
-            const bytes = try gpa.alignedAlloc(u8, alignment, alloc_size);
+        fn allocItem(gpa: Allocator) Allocator.Error!Item {
+            const bytes = try gpa.alignedAlloc(u8, .fromByteUnits(alignment), alloc_size);
             return @ptrCast(@alignCast(bytes[0..@sizeOf(T)]));
         }
-        inline fn freeItem(gpa: Allocator, item: Pointer) void {
+        fn freeItem(gpa: Allocator, item: Item) void {
             const bytes = @as([*]align(alignment) u8, @ptrCast(item))[0..alloc_size];
             gpa.free(bytes);
         }
@@ -195,7 +198,7 @@ pub fn ConcurrentMemoryPool(comptime T: type, comptime options: Options) type {
 test "basic usage" {
     const gpa = testing.allocator;
 
-    var pool = ConcurrentMemoryPool(u32, .{}).empty;
+    var pool = MemoryPool(u32, .{}).empty;
     defer pool.deinit(gpa);
 
     const p1 = try pool.create(gpa);
@@ -221,11 +224,11 @@ test "init with capacity" {
     var limited_allocator = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = capacity });
     const limited = limited_allocator.allocator();
 
-    const Pool = ConcurrentMemoryPool(u32, .{});
+    const Pool = MemoryPool(u32, .{});
     var pool = try Pool.initCapacity(limited, capacity);
     defer pool.deinit(limited);
 
-    var created: [capacity]Pool.Pointer = undefined;
+    var created: [capacity]Pool.Item = undefined;
     for (0..capacity) |i| {
         created[i] = try pool.create(limited);
     }
@@ -248,7 +251,7 @@ test "mt fuzz" {
     try thread_pool.init(.{ .allocator = gpa, .n_jobs = 256 });
     defer thread_pool.deinit();
 
-    const Pool = ConcurrentMemoryPool(u32, .{});
+    const Pool = MemoryPool(u32, .{});
     var pool = Pool.empty;
     defer pool.deinit(gpa);
 

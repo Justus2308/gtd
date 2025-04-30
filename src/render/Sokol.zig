@@ -1,7 +1,7 @@
 allocator: Allocator,
 sokol_allocator: *SokolAllocator,
 
-const Backend = @This();
+const Self = @This();
 
 const std = @import("std");
 const stdx = @import("stdx");
@@ -12,7 +12,7 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 
-pub fn init(allocator: Allocator) Allocator.Error!Backend {
+pub fn init(allocator: Allocator) Allocator.Error!Self {
     const sokol_allocator = try allocator.create(SokolAllocator);
     sokol_allocator.* = .init(allocator);
     gfx.setup(.{
@@ -24,16 +24,16 @@ pub fn init(allocator: Allocator) Allocator.Error!Backend {
         .environment = sokol.glue.environment(),
         .logger = .{ .func = &log },
     });
-    const backend = Backend{
+    const self = Self{
         .allocator = allocator,
         .sokol_allocator = sokol_allocator,
     };
-    return backend;
+    return self;
 }
 
-pub fn deinit(backend: *Backend) void {
+pub fn deinit(self: *Self) void {
     gfx.shutdown();
-    backend.sokol_allocator.deinit();
+    self.sokol_allocator.deinit();
 }
 
 fn Cache(comptime K: type, comptime V: type) type {

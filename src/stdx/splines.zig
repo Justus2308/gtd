@@ -1,25 +1,26 @@
 const std = @import("std");
 const stdx = @import("stdx");
-const geo = @import("geo");
+const zalgebra = @import("zalgebra");
 
 const mem = std.mem;
 const testing = std.testing;
 
 const Allocator = mem.Allocator;
-const vec = geo.linalg.v2f32;
-const Vec = vec.V;
+const Vec2 = zalgebra.Vec2;
 
 const assert = std.debug.assert;
 
+pub const Path = @import("splines/Path.zig");
+
 /// Uniform Catmull-Rom-Splines with variable tension (𝜏)
 pub const catmull_rom = struct {
-    pub fn point(p1: Vec, p2: Vec, p3: Vec, p4: Vec, t: f32, tension: f32) Vec {
+    pub fn point(p1: Vec2, p2: Vec2, p3: Vec2, p4: Vec2, t: f32, tension: f32) Vec2 {
         const q0: f32 = (-1.0 * tension * t * t * t) + (2.0 * tension * t * t) + (-1.0 * tension * t);
         const q1: f32 = ((4.0 - tension) * t * t * t) + ((tension - 6.0) * t * t) + 2.0;
         const q2: f32 = ((tension - 4.0) * t * t * t) + ((-2.0 * (tension - 3.0)) * t * t) + (tension * t);
         const q3: f32 = (tension * t * t * t) + (-1.0 * tension * t * t);
 
-        return vec.scale((vec.scale(p1, q0) + vec.scale(p2, q1) + vec.scale(p3, q2) + vec.scale(p4, q3)), 0.5);
+        return Vec2.scale((Vec2.scale(p1, q0) + Vec2.scale(p2, q1) + Vec2.scale(p3, q2) + Vec2.scale(p4, q3)), 0.5);
     }
 
     pub fn deriv(p1: Vec, p2: Vec, p3: Vec, p4: Vec, t: f32, tension: f32) Vec {

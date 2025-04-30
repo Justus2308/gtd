@@ -18,7 +18,6 @@ const Vec2D = geo.points.Vec2D;
 
 const assert = std.debug.assert;
 
-
 pub const Immutable = extern struct {
     base_hp: f16,
     base_speed: f16,
@@ -171,7 +170,6 @@ pub const Immutable = extern struct {
     }
 };
 
-
 pub const Mutable = struct {
     t: f32,
     hp: f32,
@@ -180,9 +178,7 @@ pub const Mutable = struct {
     color: Color,
     extra: Extra,
 
-
-    pub const List = stdx.StaticMultiArrayList(Mutable);
-
+    pub const List = std.MultiArrayList(Mutable);
 
     pub const Color = enum(u8) {
         none = 0,
@@ -208,7 +204,6 @@ pub const Mutable = struct {
     };
 };
 
-
 pub const Template = packed struct(u16) {
     kind: Kind,
     color: Mutable.Color,
@@ -216,11 +211,7 @@ pub const Template = packed struct(u16) {
 
     pub inline fn normal(color: Mutable.Color, extra: Mutable.Extra) Template {
         assert(color != .none);
-        return .{
-            .kind = .normal,
-            .color = color,
-            .extra = extra
-        };
+        return .{ .kind = .normal, .color = color, .extra = extra };
     }
     pub inline fn special(kind: Kind, extra: Mutable.Extra) Template {
         assert(kind != .normal);
