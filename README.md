@@ -9,6 +9,15 @@ Code speaks for itself
 
 <img src="https://external-preview.redd.it/x05HyMe3I3PnNWv82hZnLK3no_oZB9eltPArfALad3M.png?format=pjpg&auto=webp&s=276c4a030ba2d78f17aa7217c4c5cc332a8b283a" width=30%>
 
+### Game state:
+
+### Memory management:
+
+### Thread safety:
+
+### Known limitations:
+- Seeking projectiles with [lock-on behavior](https://bloons.fandom.com/wiki/Lock-On_Behavior) are not supported since individual goons do not have a persistent identity across frames. Other types of seeking behavior are supported.
+
 ## Installation
 
 ### Requirements:
@@ -60,3 +69,4 @@ A list of resources that really helped me along the way:
 - [Sokol Samples](https://github.com/floooh/sokol-samples)
 - [C. Yuksel et al.: On the Parameterization of Catmull-Rom Curves](https://www.cemyuksel.com/research/catmullrom_param/catmullrom.pdf)
 - [Resource efficient Thread Pools with Zig ](https://zig.news/kprotty/resource-efficient-thread-pools-with-zig-3291)
+- [Bloons Wiki](https://bloons.fandom.com/wiki/Bloons_Wiki)

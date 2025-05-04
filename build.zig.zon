@@ -14,9 +14,9 @@
             .url = "https://github.com/zigimg/zigimg/archive/master.tar.gz",
             .hash = "zigimg-0.1.0-AAAAAL0yEQCoz5-D4AMjsxi8aMEbZy_RwEg4kgomlHBm",
         },
-        .zgltf = .{
-            .url = "https://github.com/kooparse/zgltf/archive/main.tar.gz",
-            .hash = "zgltf-0.1.0-sX6QAtwJAgB_Qb8QNfJyvGVAVqsH8ABMmyDt6L4D_Cyw",
+        .zmesh = .{
+            .url = "https://github.com/zig-gamedev/zmesh/archive/main.tar.gz",
+            .hash = "zmesh-0.11.0-dev-oO3A5gx7CgCBPHsGeuNzwzXAyEvs57u39AD5EUZTScli",
         },
         .s2s = .{
             .url = "https://github.com/ziglibs/s2s/archive/master.tar.gz",
@@ -25,6 +25,10 @@
         .zalgebra = .{
             .url = "https://github.com/kooparse/zalgebra/archive/main.tar.gz",
             .hash = "zalgebra-0.0.0-aaiVSj5nAQDFe0Cnx-aoGE2HzVtg1Ij62auYZ6nxR9do",
+        },
+        .domath = .{
+            .url = "https://github.com/Justus2308/domath/archive/main.tar.gz",
+            .hash = "domath-0.0.0-ncT8GnRlAAAIYU7ENMPu30XZbkdGNjCjYPDWm5qcReAR",
         },
 
         // Tooling

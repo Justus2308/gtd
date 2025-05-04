@@ -17,7 +17,6 @@ const assert = std.debug.assert;
 
 const cache_line = std.atomic.cache_line;
 
-
 const attributes = @import("Ape/attributes.zig");
 const interactions = @import("interactions.zig");
 const Goon = @import("Goon.zig");
@@ -25,9 +24,7 @@ const Goon = @import("Goon.zig");
 const Damage = interactions.Damage;
 const Effect = interactions.Effect;
 
-
 id: u32,
-
 
 pub const Mutable = attributes.Mutable;
 pub const Immutable = attributes.Immutable;
@@ -48,11 +45,7 @@ pub const immutable_attribute_table align(std.atomic.cache_line) = enums.directE
     },
 );
 
-
-pub const Kind = enum(u8) {
-
-};
-
+pub const Kind = enum(u8) {};
 
 pub const Attack = union {
     projectile: Projectile,
@@ -72,9 +65,7 @@ pub const Attack = union {
             Projectile.Kind.Data,
             0,
             .{
-                .dart = .{
-
-                },
+                .dart = .{},
             },
         );
 
@@ -120,7 +111,6 @@ pub const Attack = union {
 
         pub const List = std.MultiArrayList(Projectile);
 
-
         /// A projectile block only contains projectiles of the same type.
         pub const Block = struct {
             /// Memory used by `projectiles`, do not touch directly.
@@ -134,7 +124,6 @@ pub const Attack = union {
             /// Block list that is exclusively used
             /// to store projectiles created by this block.
             linked: ?*Block.List,
-
 
             pub const capacity = 64;
             const mem_size = Projectile.List.capacityInBytes(Block.capacity);
@@ -150,7 +139,6 @@ pub const Attack = union {
                 ref_list: Projectile.Block.RefList,
                 shared: Projectile.Block.Shared,
                 current_block_idx: u32,
-
 
                 pub fn init(
                     allocator: Allocator,
@@ -215,7 +203,7 @@ pub const Attack = union {
                     while (spawned < count) {
                         @branchHint(.unlikely);
                         const new_block = list.createBlock(true) catch return spawned;
-                        spawned += new_block.spawn(damage, max_pierce, positions[spawned..], trajectories[spawned..], count-spawned);
+                        spawned += new_block.spawn(damage, max_pierce, positions[spawned..], trajectories[spawned..], count - spawned);
                     }
                     return count;
                 }
@@ -243,7 +231,7 @@ pub const Attack = union {
 
                     try list.ref_list.append(block);
                     if (is_new_current_block) {
-                        list.current_block_idx = list.ref_list.items.len-1;
+                        list.current_block_idx = list.ref_list.items.len - 1;
                     }
                     return block;
                 }
@@ -317,11 +305,11 @@ pub const Attack = union {
             pub inline fn reserveFirstConsecutiveFree(block: *Projectile.Block, required: u32) ?u32 {
                 const mask: Block.BitSet.MaskInt = (1 << required) - 1;
                 const bits = block.is_free.mask;
-                for (0..Projectile.Block.capacity-required) |i| {
+                for (0..Projectile.Block.capacity - required) |i| {
                     if ((bits >> i) & mask == mask) {
                         block.is_free.setRangeValue(.{
                             .start = i,
-                            .end = i+required,
+                            .end = i + required,
                         }, false);
                         return @intCast(i);
                     }
@@ -357,7 +345,7 @@ pub const Attack = union {
         pub const Extra = packed struct(u32) {
             effect_kind: Effect.Kind = .none,
             damage_kind: Damage,
-            _1: meta.Int(.unsigned, 32-@bitSizeOf(Effect.Kind)-@bitSizeOf(Damage)),
+            _1: meta.Int(.unsigned, 32 - @bitSizeOf(Effect.Kind) - @bitSizeOf(Damage)),
         };
     };
 };

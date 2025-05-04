@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
@@ -8,6 +9,8 @@ pub const Config = struct {
     chunk_size: usize = (1 << 10),
     /// Needs to be power of two and `>= chunk_size`.
     /// Ideally `allocation_granularity > chunk_size`.
+    /// If `allocation_granularity == chunk_size` this allocator degrades to a
+    /// worse `std.heap.page_allocator`.
     allocation_granularity: usize = std.heap.page_size_max,
     /// If `true`, the allocator can allocate additional chunks after a initial setup.
     /// If `false`, the allocator will not allocate further after a call to `initPreheated`.
@@ -15,7 +18,9 @@ pub const Config = struct {
     /// If `true`, the allocator will free unused allocations.
     /// If `false`, the allocator will never free anything.
     shrinkable: bool = true,
-    /// It is recommended to use `page_allocator` since it
+    /// Uses a `std.Thread.Mutex` to ensure thread safety of `create()` and `free()`.
+    thread_safe: bool = !builtin.single_threaded,
+    /// It is recommended to use `std.heap.page_allocator` since it
     /// prevents any fragmentation from happening.
     /// Used mainly for testing purposes.
     backing_allocator: Allocator = std.heap.page_allocator,
@@ -42,6 +47,7 @@ pub fn ChunkAllocator(comptime config: Config) type {
         gpa: Allocator,
         allocations: std.AutoArrayHashMapUnmanaged(usize, FreeSet),
         avail_set: std.DynamicBitSetUnmanaged,
+        mutex: Mutex,
 
         const Self = @This();
 
@@ -53,14 +59,22 @@ pub fn ChunkAllocator(comptime config: Config) type {
 
         pub const is_growable = config.growable;
         pub const is_shrinkable = config.shrinkable;
+        pub const is_thread_safe = config.thread_safe;
 
         const FreeSet = std.StaticBitSet(chunks_per_alloc);
+
+        const Mutex = if (config.thread_safe) std.Thread.Mutex else struct {
+            pub fn tryLock(_: *@This()) void {}
+            pub fn lock(_: *@This()) void {}
+            pub fn unlock(_: *@This()) void {}
+        };
 
         pub fn init(metadata_gpa: Allocator) Self {
             return Self{
                 .gpa = metadata_gpa,
                 .allocations = .empty,
                 .avail_set = .{},
+                .mutex = .{},
             };
         }
 
@@ -127,6 +141,9 @@ pub fn ChunkAllocator(comptime config: Config) type {
         }
 
         pub fn create(self: *Self) Allocator.Error![]align(chunk_size) u8 {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
             const first_avail_idx = self.avail_set.findFirstSet() orelse new: {
                 if (is_growable == false) {
                     return Allocator.Error.OutOfMemory;
@@ -152,6 +169,9 @@ pub fn ChunkAllocator(comptime config: Config) type {
         }
 
         pub fn destroy(self: *Self, chunk: []align(chunk_size) u8) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
             const chunk_addr = @intFromPtr(chunk.ptr);
             const alloc_addr = alloc_align.backward(chunk_addr);
             const chunk_index = ((chunk_addr - alloc_addr) >> chunk_size_shift);

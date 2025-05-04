@@ -3,7 +3,8 @@ hp: f32,
 speed: f32,
 kind: Kind,
 extra: Extra,
-effects: ?*Effect.Set = null,
+effect_index: Effect.List.Index = .none,
+active_effects: Effect.Active = .initEmpty(),
 
 const Goon = @This();
 
@@ -48,7 +49,7 @@ pub const Extra = packed struct(u8) {
 pub const Effect = struct {
     strength: f32,
     time_remaining: f32,
-    bytes: u32,
+    bytes: Effect.Bytes,
 
     pub const Kind = enum(u8) {
         fire,
@@ -73,10 +74,228 @@ pub const Effect = struct {
         laser_shocked,
     };
 
-    pub const count = @typeInfo(Effect.Kind).@"enum".fields.len;
+    pub const Bytes = extern union {
+        fire: extern struct {
+            application_rate: ApplicationRate,
+        },
+        glue_yellow: extern struct {
+            is_strong: bool,
+            is_corrosive: bool,
+            corrosive_application_rate: ApplicationRate,
+        },
+        glue_green: extern struct {
+            is_strong: bool,
+            application_rate: ApplicationRate,
+        },
+        glue_purple: extern struct {
+            is_corrosive: bool,
+            corrosive_application_rate: ApplicationRate,
+            damage: f16,
+        },
+        freeze: void,
+        stun: void,
+        permafrost: void,
+        sabotaged: void,
+        blowback: void,
+        radiated: void,
+        crippled: void,
+        acidic_red: void,
+        acidic_purple: void,
+        grow_blocked: void,
+        partially_gold: void,
+        sticky_bombed: void,
+        trojaned: void,
+        syphoned: void,
+        hexed: void,
+        laser_shocked: void,
 
-    pub const Set = stdx.StructOfArrays(Effect, Effect.count);
-    pub const List = std.MultiArrayList(Effect.Set);
+        comptime {
+            if (@sizeOf(Effect.Bytes) != 4) {
+                @compileError("Bytes needs to have size 4");
+            }
+
+            // Perform the same checks the compiler would for a tagged union
+            const enum_fields = @typeInfo(Effect.Kind).@"enum".fields;
+            const union_fields = @typeInfo(Effect.Bytes).@"union".fields;
+            if (union_fields.len > enum_fields.len) {
+                @compileError("Bytes has too many fields, should only have exactly one for each Kind");
+            }
+            @setEvalBranchQuota(enum_fields.len * union_fields.len);
+            for (enum_fields) |e_field| {
+                for (union_fields) |u_field| {
+                    if (mem.eql([:0]const u8, e_field.name, u_field.name)) break;
+                } else {
+                    @compileError("Bytes is missing a field for Kind '" ++ e_field.name ++ "'");
+                }
+            }
+        }
+    };
+
+    pub const ApplicationRate = enum(u8) {
+        two,
+        one,
+        point_five,
+        point_one,
+
+        pub fn toFloat(application_rate: ApplicationRate) f32 {
+            return switch (application_rate) {
+                .two => 2.0,
+                .one => 1.0,
+                .point_five => 0.5,
+                .point_one => 0.1,
+            };
+        }
+    };
+
+    pub const ApplyResult = struct {
+        hp_diff: f32,
+        speed_diff: f32,
+        is_still_active: bool,
+    };
+    /// Mutates effect.
+    /// Returns whether effect is still active after application.
+    pub fn apply(
+        noalias effect: *Effect,
+        kind: Effect.Kind,
+        dt: f32,
+    ) ApplyResult {
+        const time_remaining = (effect.time_remaining - dt);
+        const hp_diff, const speed_diff = switch (kind) {
+            .fire => diff: {
+                if (@ceil(time_remaining) < @ceil(effect.time_remaining)) {
+                    // crossed second border, apply damage
+                    @branchHint(.unlikely);
+                    break :diff .{ -effect.strength, 0 };
+                } else {
+                    @branchHint(.likely);
+                    break :diff .{ 0, 0 };
+                }
+            },
+            .glue_yellow => {},
+        };
+        effect.time_remaining = time_remaining;
+        return ApplyResult{
+            .hp_diff = hp_diff,
+            .speed_diff = speed_diff,
+            .is_still_active = (time_remaining > 0),
+        };
+    }
+
+    pub const count = @typeInfo(Effect.Kind).@"enum".fields.len;
+    pub const Active = std.EnumSet(Effect.Kind);
+    pub const Set = std.EnumArray(Effect.Kind, Effect);
+
+    /// Guarantees stable indices, but not stable pointers.
+    pub const List = struct {
+        entries: Effect.List.Entries,
+        avail_set: Effect.List.AvailSet,
+
+        pub const Entries = std.ArrayListUnmanaged(Effect.Set);
+        pub const AvailSet = std.DynamicBitSetUnmanaged;
+
+        pub const Index = enum(u32) {
+            none = math.maxInt(u32),
+            _,
+
+            pub inline fn from(val: u32) Index {
+                const index: Index = @enumFromInt(val);
+                assert(index != .none);
+                return index;
+            }
+            pub inline fn asInt(index: Index) u32 {
+                assert(index != .none);
+                return @intFromEnum(index);
+            }
+        };
+
+        pub const empty = Effect.List{
+            .entries = .empty,
+            .avail_set = .{},
+        };
+
+        pub fn initCapacity(gpa: Allocator, min_capacity: u32) Allocator.Error!Effect.List {
+            var list = Effect.List.empty;
+            try list.ensureTotalCapacity(gpa, min_capacity);
+            return list;
+        }
+
+        pub fn deinit(list: *Effect.List, gpa: Allocator) void {
+            list.entries.deinit(gpa);
+            list.avail_set.deinit(gpa);
+            list.* = undefined;
+        }
+
+        fn AtType(comptime SelfType: type) type {
+            if (@typeInfo(SelfType).pointer.is_const) {
+                return *const Effect.Set;
+            } else {
+                return *Effect.Set;
+            }
+        }
+        pub fn at(list: anytype, index: Index) AtType(@TypeOf(list)) {
+            assert(index < list.capacity() and list.avail_set.isSet(index.asInt()) == false);
+            return list.entries.items[index.asInt()];
+        }
+
+        pub fn usedCount(list: *Effect.List) u32 {
+            return @intCast(list.entries.capacity - list.avail_set.count());
+        }
+        pub fn unusedCount(list: *Effect.List) u32 {
+            return @intCast(list.avail_set.count());
+        }
+
+        pub fn capacity(list: *Effect.List) u32 {
+            return list.entries.capacity;
+        }
+
+        /// Reserves slot for use by caller, allocating as necessary.
+        /// Returned index is guaranteed to not be `.none`.
+        pub fn acquireOne(list: *Effect.List, gpa: Allocator) Allocator.Error!Index {
+            list.ensureUnusedCapacity(gpa, 1);
+            return list.acquireOneAssumeCapacity();
+        }
+
+        /// Reserves slot for use by caller.
+        /// Returned index is guaranteed to not be `.none`.
+        pub fn acquireOneAssumeCapacity(list: *Effect.List) Index {
+            const avail_idx = list.avail_set.toggleFirstSet().?;
+            return .from(@intCast(avail_idx));
+        }
+
+        pub fn release(list: *Effect.List, index: Index) void {
+            const idx = index.asInt();
+            assert(list.avail_set.isSet(idx) == false);
+            list.avail_set.set(index);
+        }
+
+        pub fn ensureTotalCapacity(list: *Effect.List, gpa: Allocator, new_capacity: u32) Allocator.Error!void {
+            try list.entries.ensureTotalCapacity(gpa, new_capacity);
+            list.entries.len = list.entries.capacity;
+            try list.avail_set.resize(gpa, list.entries.capacity, true);
+        }
+        pub fn ensureUnusedCapacity(list: *Effect.List, gpa: Allocator, additional_count: u32) Allocator.Error!void {
+            const unused_count = list.unusedCount();
+            if (unused_count < additional_count) {
+                const required_count = (additional_count - unused_count);
+                const new_capacity = (list.entries.capacity + required_count);
+                try list.ensureTotalCapacity(gpa, new_capacity);
+            }
+        }
+
+        pub fn shrink(list: *Effect.List, gpa: Allocator, new_capacity: u32) void {
+            list.entries.shrinkAndFree(gpa, new_capacity);
+            list.entries.len = list.entries.capacity;
+            list.avail_set.resize(gpa, list.entries.capacity, true) catch unreachable;
+        }
+
+        pub fn clearAndFree(list: *Effect.List, gpa: Allocator) void {
+            list.entries.clearAndFree(gpa);
+            list.avail_set.resize(gpa, 0, false) catch unreachable;
+        }
+        pub fn clearRetainingCapacity(list: *Effect.List) void {
+            list.avail_set.setAll();
+        }
+    };
 };
 
 pub const Immutable = attributes.Immutable;
@@ -93,15 +312,14 @@ pub const base_speed_offset_table = data.base_speed_offset_table;
 /// Dense fixed-size container for `Goon`s.
 /// Linkable into `Block.List`.
 pub const Block = struct {
-    /// Array of entries. Entries do not have
-    /// a persistent identity.
+    /// Used for `effects`.
+    gpa: Allocator,
+    /// Array of entries. Entries do not have a persistent identity.
     entries: Entries,
+    /// Per-block effect storage for every entry that needs it.
+    effects: Effect.List,
     /// Intrusive node for `Block.List`.
     list_node: List.Node,
-    /// Does not change during a frame.
-    local_orig: stdx.Immutable(*Block),
-    /// Only valid for `local_orig`.
-    local_curr: stdx.Immutable(*Block),
 
     pub const Entries = std.MultiArrayList(Goon);
     pub const List = std.DoublyLinkedList;
@@ -119,7 +337,7 @@ pub const Block = struct {
     };
 
     /// Lifetime of returned pointer is coupled to `buffer`.
-    pub fn init(buffer: *align(alignment.toByteUnits()) [size]u8) *Block {
+    pub fn init(effect_gpa: Allocator, buffer: *align(alignment.toByteUnits()) [size]u8) *Block {
         var fba = heap.FixedBufferAllocator.init(buffer);
         const a = fba.allocator();
 
@@ -130,19 +348,122 @@ pub const Block = struct {
         assert(fba.end_index == size);
 
         block.* = .{
+            .gpa = effect_gpa,
             .entries = entries,
+            .effects = .empty,
             .list_node = .{},
-            .local_orig = block,
-            .local_curr = block,
         };
         return block;
     }
 
-    fn addLocalBlock(block: *Block, buffer: *align(alignment.toByteUnits()) [size]u8) void {
-        const new = Block.init(buffer);
-        const orig = block.local_orig.get();
-        new.local_orig.do_not_access = orig;
-        orig.local_curr.do_not_access = new;
+    pub fn clear(block: *Block) void {
+        block.entries.clearRetainingCapacity();
+        assert(block.entries.capacity == max_entry_count);
+    }
+
+    const default_batch_size = 4;
+
+    pub const GpuWriteTaskCtx = struct {
+        block: *Block,
+        dest: []u8,
+        task: Task,
+        wg: *WaitGroup,
+    };
+    pub fn makeGpuWriteTask(block: *Block, dest: []u8, wg: *WaitGroup) GpuWriteTaskCtx {
+        return .{
+            .block = block,
+            .dest = dest,
+            .task = .{ .callback = &gpuWrite },
+            .wg = wg,
+        };
+    }
+    fn gpuWrite(task: *Task) void {
+        const ctx: *GpuWriteTaskCtx = @fieldParentPtr("task", task);
+        _ = ctx;
+    }
+
+    pub const UpdateTaskCtx = struct {
+        cur_block: *Block,
+        old_block: *const Block,
+        new_block_fn: *const newBlockFn,
+        dt: f32,
+
+        task: Task,
+        wg: *WaitGroup,
+
+        /// Has to be thread safe.
+        pub const newBlockFn = fn (ctx: *anyopaque) *Block;
+    };
+    pub fn makeUpdateTask(
+        cur_block: *Block,
+        old_block: *const Block,
+        new_block_fn: *const UpdateTaskCtx.newBlockFn,
+        dt: f32,
+        wg: *WaitGroup,
+    ) UpdateTaskCtx {
+        return .{
+            .cur_block = cur_block,
+            .old_block = old_block,
+            .new_block_fn = new_block_fn,
+            .dt = dt,
+            .task = .{ .callback = &update },
+            .wg = wg,
+        };
+    }
+    fn update(task: *Task) void {
+        const ctx: *UpdateTaskCtx = @fieldParentPtr("task", task);
+
+        const batch_size = comptime batch_size: {
+            var Biggest = void;
+            for (@typeInfo(Goon).@"struct".fields) |field| {
+                if (@sizeOf(field.type) > @sizeOf(Biggest)) {
+                    Biggest = field.type;
+                }
+            }
+            break :batch_size std.simd.suggestVectorLength(Biggest) orelse default_batch_size;
+        };
+        const vconf = domath.VectorConfig{ .batch_size = batch_size };
+        const fpv = domath.vectorEx(1, f32, vconf);
+
+        // APPLY OLD EFFECTS
+
+        // Effect sets are always mutable since they are only used from within their respective block.
+        // All external accessors of the old block may only use the per-entry `active_effects` field.
+        ctx.cur_block.effects = ctx.old_block.effects;
+        const effects = &ctx.cur_block.effects;
+
+        const old = ctx.old_block.entries.slice();
+        const cur = ctx.cur_block.entries.slice();
+
+        for (
+            old.items(.effect_index),
+            cur.items(.effect_index),
+            old.items(.active_effects),
+            cur.items(.active_effects),
+            0..,
+        ) |old_idx, *cur_idx, old_active, *cur_active, i| {
+            if (old_idx != .none) {
+                const effect_set = effects.at(old_idx);
+                var active_it = old_active.iterator();
+                while (active_it.next()) |kind| {
+                    const is_still_active = effect_set.getPtr(kind).apply(kind, &old, &cur, i, ctx.dt);
+                    cur_active.setPresent(kind, is_still_active);
+                }
+                if (cur_active.count() == 0) {
+                    effects.release(old_idx);
+                    cur_idx.* = .none;
+                } else {
+                    cur_idx.* = old_idx;
+                }
+            }
+        }
+
+        // SCAN FOR PROJECTILE HITS AND APPLY DAMAGE + NEW EFFECTS
+
+        var i: usize = 0;
+        while (i < old.capacity) : (i += batch_size) {}
+
+        const remaining = (i - old.capacity);
     }
 
     // if entries always start in sorted state:
@@ -174,8 +495,9 @@ pub const Block = struct {
 };
 
 const std = @import("std");
-const game = @import("game");
 const stdx = @import("stdx");
+const game = @import("game");
+const domath = @import("domath");
 
 const attributes = @import("Goon/attributes.zig");
 const data = @import("Goon/data.zig");
@@ -185,5 +507,7 @@ const math = std.math;
 const mem = std.mem;
 
 const Allocator = mem.Allocator;
+const Task = stdx.concurrent.ThreadPool.Task;
+const WaitGroup = std.Thread.WaitGroup;
 
 const assert = std.debug.assert;

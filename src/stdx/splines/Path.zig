@@ -1,10 +1,81 @@
-subpaths: []const Subpath,
+subpaths: [max_subpath_count]NodeList,
+subpath_avail_set: SubpathAvailSet,
+nodes: NodeStorage,
+unused_nodes: NodeList,
+unused_node_count: usize,
 
 const Path = @This();
-const Subpath = stdx.StaticMultiArrayList(Path.Segment);
 
 pub const max_subpath_count = 8;
-pub const max_segment_count = 64;
+pub const max_node_count = 64;
+
+pub const Node = struct {
+    x: f32,
+    y: f32,
+    tension: stdx.BoundedValue(f32, 0, 1),
+    ll_node: NodeList.Node = .{},
+};
+
+pub const SubpathAvailSet = std.StaticBitSet(max_subpath_count);
+pub const NodeStorage = std.BoundedArray(Node, max_node_count);
+pub const NodeList = std.DoublyLinkedList;
+
+pub const empty = Path{
+    .subpaths = @splat(.{}),
+    .subpath_avail_set = .initFull(),
+    .nodes = .{},
+    .unused_nodes = .{},
+    .unused_node_count = max_node_count,
+};
+
+pub fn acquireSubpath(path: *Path) ?*NodeList {
+    const index = path.subpath_avail_set.toggleFirstSet() orelse return null;
+    return &path.subpaths[index];
+}
+pub fn releaseSubpath(path: *Path, subpath: *NodeList) void {
+    assert(stdx.containsPointer(NodeStorage, &path.subpaths, subpath));
+    const addr_diff = (@intFromPtr(subpath) - @intFromPtr(&path.subpaths));
+    const index = @divExact(addr_diff, @sizeOf(NodeList));
+    assert(path.subpath_avail_set.isSet(index) == false);
+    path.subpath_avail_set.set(index);
+}
+
+pub fn acquireNode(path: *Path) ?*Node {
+    if (path.unused_node_count == 0) {
+        return null;
+    } else {
+        assert(path.unused_node_count <= max_node_count);
+        path.unused_node_count -= 1;
+    }
+    if (path.unused_nodes.pop()) |ll_node| {
+        const node: *Node = @fieldParentPtr("ll_node", ll_node);
+        assert(stdx.containsPointer(Node, path.nodes.constSlice(), node));
+        return node;
+    } else {
+        return path.nodes.addOneAssumeCapacity();
+    }
+}
+pub fn releaseNode(path: *Path, node: *Node) void {
+    if (&path.nodes.buffer[path.nodes.len - 1] == node) {
+        _ = path.nodes.pop().?;
+    } else {
+        assert(stdx.containsPointer(Node, path.nodes.constSlice(), node));
+        path.unused_nodes.append(node.ll_node);
+    }
+    path.unused_node_count += 1;
+    assert(path.unused_node_count <= max_node_count);
+}
+
+pub fn usedNodeCount(path: Path) usize {
+    return (max_node_count - path.unusedNodeCount());
+}
+pub fn unusedNodeCount(path: Path) usize {
+    assert(path.unused_node_count <= max_node_count);
+    return path.unused_node_count;
+}
+pub fn subpathNodeCount(path: Path, subpath_index: usize) usize {
+    return path.subpaths[subpath_index].len();
+}
 
 pub inline fn build(allocator: Allocator) Allocator.Error!Path.Builder {
     return Path.Builder.init(allocator);

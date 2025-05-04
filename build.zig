@@ -198,11 +198,11 @@ pub fn build(b: *std.Build) void {
     runtime_options.addOption(bool, "is_use_compute", is_use_compute);
 
     // Configure dependencies
-    const zgltf_dep = b.dependency("zgltf", .{
+    const zmesh_dep = b.dependency("zmesh", .{
         .target = target,
         .optimize = optimize,
     });
-    const zgltf_mod = zgltf_dep.module("zgltf");
+    const zmesh_mod = zmesh_dep.module("root");
 
     const zigimg_dep = b.dependency("zigimg", .{
         .target = target,
@@ -221,6 +221,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const zalgebra_mod = zalgebra_dep.module("zalgebra");
+
+    const domath_dep = b.dependency("domath", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const domath_mod = domath_dep.module("domath");
 
     const sokol_dep = b.dependency("sokol", .{
         .target = target,
@@ -248,7 +254,7 @@ pub fn build(b: *std.Build) void {
     // Compile shader
     const sokol_shdc_cmd = std.Build.Step.Run.create(b, "sokol-shdc");
     sokol_shdc_cmd.addFileArg(sokol_shdc_bin_path);
-    sokol_shdc_cmd.addPrefixedFileArg("--input=", b.path("src/render/shader.glsl"));
+    sokol_shdc_cmd.addPrefixedFileArg("--input=", b.path("src/render/shaders/shader.glsl"));
     const sokol_shdc_out = sokol_shdc_cmd.addPrefixedOutputFileArg("--output=", "shader.zig");
     sokol_shdc_cmd.addArgs(&.{ b.fmt("--slang={s}", .{@tagName(shader_lang)}), "--format=sokol_zig" });
 
@@ -270,18 +276,18 @@ pub fn build(b: *std.Build) void {
     shader_mod.addImport("sokol", sokol_mod);
 
     const internal_imports = [_]std.Build.Module.Import{
-        createImport(b, "geo", optimize, target),
-        createImport(b, "State", optimize, target),
-        // createImport(b, "entities", optimize, target),
-        // createImport(b, "game", optimize, target),
+        createImport(b, "asset", optimize, target),
+        createImport(b, "game", optimize, target),
+        createImport(b, "render", optimize, target),
         createImport(b, "stdx", optimize, target),
     };
     const external_imports = [_]std.Build.Module.Import{
         .{ .name = "sokol", .module = sokol_mod },
-        .{ .name = "zgltf", .module = zgltf_mod },
         .{ .name = "zigimg", .module = zigimg_mod },
+        .{ .name = "zmesh", .module = zmesh_mod },
         .{ .name = "s2s", .module = s2s_mod },
         .{ .name = "zalgebra", .module = zalgebra_mod },
+        .{ .name = "domath", .module = domath_mod },
         .{ .name = "shader", .module = shader_mod },
     };
     addAllImports(&internal_imports, &external_imports);
@@ -303,7 +309,7 @@ pub fn build(b: *std.Build) void {
 
     b.getInstallStep().dependOn(&sokol_shdc_cmd.step);
 
-    const run_cmd = if (target_category == .web) blk: {
+    const run_cmd, const compile_check = if (target_category == .web) blk: {
         const backend: WebBackend = switch (sokol_backend) {
             .gles3 => .webgl2,
             .wgpu => .webgpu,
@@ -318,6 +324,10 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    const check_step = b.step("check", "Check if the app compiles");
+    check_step.dependOn(&compile_check.step);
+    check_step.dependOn(&sokol_shdc_cmd.step);
 
     const exe_unit_tests_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -384,7 +394,10 @@ fn addImportTests(b: *std.Build, imports: []const std.Build.Module.Import) void 
     }
 }
 
-fn buildNativeExe(b: *std.Build, exe_mod: *std.Build.Module) *std.Build.Step.Run {
+fn buildNativeExe(
+    b: *std.Build,
+    exe_mod: *std.Build.Module,
+) struct { *std.Build.Step.Run, *std.Build.Step.Compile } {
     const optimize = exe_mod.optimize.?;
     const target = exe_mod.resolved_target.?;
 
@@ -393,20 +406,25 @@ fn buildNativeExe(b: *std.Build, exe_mod: *std.Build.Module) *std.Build.Step.Run
     const is_mobile = (is_android or target_os == .ios or target_os == .emscripten);
     const is_safe = (optimize == .Debug or optimize == .ReleaseSafe);
 
-    const exe = b.addExecutable(.{
+    const exe_opts = std.Build.ExecutableOptions{
         .name = app_name,
         .root_module = exe_mod,
         .strip = ((optimize == .ReleaseSmall) or
             (!is_safe and is_mobile)),
         .single_threaded = false,
-    });
+    };
+
+    const exe = b.addExecutable(exe_opts);
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
 
-    return run_cmd;
+    const exe_check = b.addExecutable(exe_opts);
+
+    return .{ run_cmd, exe_check };
 }
+
 const WebBackend = enum {
     webgl2,
     webgpu,
@@ -416,18 +434,20 @@ fn buildWebExe(
     exe_mod: *std.Build.Module,
     backend: WebBackend,
     sokol_dep: *std.Build.Dependency,
-) *std.Build.Step.Run {
+) struct { *std.Build.Step.Run, *std.Build.Step.Compile } {
     const optimize = exe_mod.optimize.?;
     const target = exe_mod.resolved_target.?;
 
     const is_safe = (optimize == .Debug or optimize == .ReleaseSafe);
 
-    const lib = b.addStaticLibrary(.{
+    const lib_opts = std.Build.StaticLibraryOptions{
         .name = app_name,
         .root_module = exe_mod,
         .strip = !is_safe,
         .single_threaded = false,
-    });
+    };
+
+    const lib = b.addStaticLibrary(lib_opts);
     const emsdk = sokol_dep.builder.dependency("emsdk", .{});
     const link_step = sokol_bld.emLinkStep(b, .{
         .lib_main = lib,
@@ -444,8 +464,11 @@ fn buildWebExe(
     const run_cmd = sokol_bld.emRunStep(b, .{ .name = app_name, .emsdk = emsdk });
     run_cmd.step.dependOn(&link_step.step);
 
-    return run_cmd;
+    const lib_check = b.addStaticLibrary(lib_opts);
+
+    return .{ run_cmd, lib_check };
 }
+
 fn fmtBool(value: bool) []const u8 {
     return if (value) "true" else "false";
 }

@@ -39,14 +39,43 @@ pub fn CacheLinePadded(comptime T: type) type {
 }
 
 /// Wrap variables (e.g. struct fields) as 'immutable'.
-/// `verify_fn` will trigger an assertion if it evaluates
-/// to `false`.
-pub fn Immutable(comptime T: type, comptime verify_fn: fn (ok: bool) bool) type {
+pub fn Immutable(comptime T: type) type {
     return struct {
         do_not_access: T,
 
         pub inline fn get(self: @This()) T {
             return self.do_not_access;
+        }
+
+        pub inline fn getAssertEq(self: @This(), expected: T) T {
+            const value = self.get();
+            assert(expected == value);
+            return value;
+        }
+    };
+}
+
+/// Ensures that inner value stays within inclusive range [lower, upper].
+pub fn BoundedValue(comptime T: type, comptime lower: T, comptime upper: T) type {
+    switch (@typeInfo(T)) {
+        .comptime_int, .comptime_float, .int, .float => {},
+        else => @compileError("only supports ints and floats"),
+    }
+    if (lower > upper) {
+        @compileError("lower <= upper required");
+    }
+    return struct {
+        inner: T,
+
+        /// Asserts that returned value is within bounds.
+        pub inline fn get(self: @This()) T {
+            assert(self.inner >= lower and self.inner <= upper);
+            return self.inner;
+        }
+
+        /// Clamps `value` to specified bounds.
+        pub inline fn set(self: *@This(), value: T) void {
+            self.inner = std.math.clamp(value, lower, upper);
         }
     };
 }
@@ -75,6 +104,12 @@ pub fn atSoA(comptime Elem: type, soa: anytype, index: usize) Elem {
         @field(elem, field.name) = @field(soa, field.name)[index];
     }
     return elem;
+}
+
+/// Checks whether pointer is within memory region.
+pub fn containsPointer(comptime T: type, haystack: []const T, needle: *const T) bool {
+    const addr = @intFromPtr(needle);
+    return (addr >= @intFromPtr(&haystack[0]) and addr <= @intFromPtr(&haystack[haystack.len - 1]));
 }
 
 /// from `std.simd`
