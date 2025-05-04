@@ -12,13 +12,11 @@ const expect = std.testing.expext;
 const cache_line = std.atomic.cache_line;
 const target_os = builtin.target.os.tag;
 
-pub const simd = @import("stdx/simd.zig");
-pub const StaticMultiArrayList = @import("stdx/static_multi_array_list.zig").StaticMultiArrayList;
-
 const chunk_allocator = @import("stdx/chunk_allocator.zig");
 pub const ChunkAllocator = chunk_allocator.ChunkAllocator;
 pub const ChunkAllocatorConfig = chunk_allocator.Config;
 
+pub const splines = @import("stdx/splines.zig");
 pub const integrate = @import("stdx/integrate.zig");
 pub const concurrent = @import("stdx/concurrent.zig");
 

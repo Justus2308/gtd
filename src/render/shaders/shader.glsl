@@ -39,38 +39,38 @@ void main() {
 #pragma sokol @program shader vs fs
 
 
-#pragma sokol @cs cs_trackpos
+// #pragma sokol @cs cs_trackpos
 
-layout(binding=0) readonly buffer cs_ssbo_in {
-    float pos_rel_in[];
-};
-layout(binding=1) buffer cs_ssbo_out {
-    vec2 pos_abs_out[];
-};
+// layout(binding=0) readonly buffer cs_ssbo_in {
+//     float pos_rel_in[];
+// };
+// layout(binding=1) buffer cs_ssbo_out {
+//     vec2 pos_abs_out[];
+// };
 
-const int TRACK_POINT_COUNT = 1000;
-layout(binding=0) uniform cs_params {
-    vec2 track[TRACK_POINT_COUNT];
-};
-layout(binding=1) uniform int pos_count;
+// const int TRACK_POINT_COUNT = 1000;
+// layout(binding=0) uniform cs_params {
+//     vec2 track[TRACK_POINT_COUNT];
+// };
+// layout(binding=1) uniform int pos_count;
 
-layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
+// layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
 
-void main() {
-    const uint idx = gl_GlobalInvocationID.x;
-    if (idx >= pos_count) {
-        return;
-    }
+// void main() {
+//     const uint idx = gl_GlobalInvocationID.x;
+//     if (idx >= pos_count) {
+//         return;
+//     }
 
-    float pos_rel = pos_rel_in[idx];
-    float track_point_count_fp = float(TRACK_POINT_COUNT);
-    float track_progress = pos_rel * track_point_count_fp;
-    float track_progress_local = track_progress - floor(track_progress);
-    int track_lo = int(floor(track_progress));
-    int track_hi = int(ceil(track_progress));
-    vec2 pos_abs = mix(track[track_lo], track[track_hi], track_progress_local);
-    pos_abs_out[idx] = pos_abs;
-}
-#pragma sokol @end
+//     float pos_rel = pos_rel_in[idx];
+//     float track_point_count_fp = float(TRACK_POINT_COUNT);
+//     float track_progress = pos_rel * track_point_count_fp;
+//     float track_progress_local = track_progress - floor(track_progress);
+//     int track_lo = int(floor(track_progress));
+//     int track_hi = int(ceil(track_progress));
+//     vec2 pos_abs = mix(track[track_lo], track[track_hi], track_progress_local);
+//     pos_abs_out[idx] = pos_abs;
+// }
+// #pragma sokol @end
 
-#pragma sokol @program trackpos cs_trackpos
+// #pragma sokol @program trackpos cs_trackpos

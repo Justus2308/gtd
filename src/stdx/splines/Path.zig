@@ -1,7 +1,6 @@
-subpaths: [max_subpath_count]NodeList,
-subpath_avail_set: SubpathAvailSet,
-nodes: NodeStorage,
-unused_nodes: NodeList,
+subpaths: [max_subpath_count]Subpath,
+nodes: Node.Storage,
+unused_nodes: Node.List,
 unused_node_count: usize,
 
 const Path = @This();
@@ -13,31 +12,276 @@ pub const Node = struct {
     x: f32,
     y: f32,
     tension: stdx.BoundedValue(f32, 0, 1),
-    ll_node: NodeList.Node = .{},
+    ll_node: Node.List.Node = .{},
+
+    pub const Storage = std.BoundedArray(Node, max_node_count);
+    pub const List = std.DoublyLinkedList;
 };
 
-pub const SubpathAvailSet = std.StaticBitSet(max_subpath_count);
-pub const NodeStorage = std.BoundedArray(Node, max_node_count);
-pub const NodeList = std.DoublyLinkedList;
+pub const Subpath = struct {
+    nodes: Node.List,
+    len: u8,
+    is_used: bool,
+    direction: Direction,
+
+    pub const Direction = enum(u1) {
+        first_to_last = 0,
+        last_to_first = 1,
+
+        pub fn flipped(direction: Direction) Direction {
+            comptime assert(@typeInfo(Direction).@"enum".tag_type == u1);
+            return @enumFromInt(~@intFromEnum(direction));
+        }
+    };
+
+    pub const empty = Subpath{
+        .nodes = .{},
+        .is_used = false,
+        .direction = .first_to_last,
+    };
+
+    pub fn count(subpath: *Subpath) usize {
+        assert(subpath.is_used or subpath.len == 0);
+        assert(subpath.len <= max_node_count);
+        return @intCast(subpath.len);
+    }
+
+    pub fn append(subpath: *Subpath, new_node: *Node) bool {
+        return subpath.innerInsert(.append, null, new_node);
+    }
+    pub fn prepend(subpath: *Subpath, new_node: *Node) bool {
+        return subpath.innerInsert(.prepend, null, new_node);
+    }
+
+    pub fn insertAfter(subpath: *Subpath, existing_node: *Node, new_node: *Node) bool {
+        return subpath.innerInsert(.insert_after, existing_node, new_node);
+    }
+    pub fn insertBefore(subpath: *Subpath, existing_node: *Node, new_node: *Node) bool {
+        return subpath.innerInsert(.insert_before, existing_node, new_node);
+    }
+
+    pub fn pop(subpath: *Subpath) ?*Node {
+        return subpath.innerPop(.last);
+    }
+    pub fn popFirst(subpath: *Subpath) ?*Node {
+        return subpath.innerPop(.first);
+    }
+
+    pub fn remove(subpath: *Subpath, node: *Node) void {
+        assert(subpath.is_used);
+        assert(subpath.contains(node));
+        subpath.nodes.remove(node.ll_node);
+        subpath.len -= 1;
+    }
+
+    pub fn contains(subpath: Subpath, node: *Node) bool {
+        assert(subpath.is_used);
+        var ll_node_maybe = subpath.nodes.first;
+        while (ll_node_maybe) |ll_node| : (ll_node_maybe = ll_node.next) {
+            const path_node: *Node = @fieldParentPtr("ll_node", ll_node);
+            if (node == path_node) {
+                return true;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    /// Only affects iteration/discretization order, list order remains unchanged.
+    pub fn flipDirection(subpath: *Subpath) void {
+        assert(subpath.is_used);
+        subpath.direction = subpath.direction.flipped();
+    }
+
+    pub const Discretized = stdx.splines.CatmullRomDiscretized;
+
+    pub fn discretizeFast(subpath: *Subpath, gpa: Allocator) Allocator.Error!Discretized.Slice {
+        return subpath.discretize(.fast, gpa, 0.1);
+    }
+    pub fn discretizePrecise(subpath: *Subpath, gpa: Allocator) Allocator.Error!Discretized.Slice {
+        return subpath.discretize(.precise, gpa, 0.01);
+    }
+
+    pub const DiscretizeMode = enum {
+        fast,
+        precise,
+
+        pub fn getNamespace(mode: DiscretizeMode) type {
+            return switch (mode) {
+                .fast => stdx.splines.catmull_rom(f32, .{ .trapezoid = .{ .subdivisions = 100 } }),
+                .precise => stdx.splines.catmull_rom(f32, .{ .trapezoid = .{ .subdivisions = 500 } }),
+            };
+        }
+    };
+    pub fn discretize(
+        subpath: *Subpath,
+        comptime mode: DiscretizeMode,
+        gpa: Allocator,
+        granularity: f32,
+    ) Allocator.Error!Discretized.Slice {
+        const user_node_count = subpath.count();
+        if (user_node_count < 2) {
+            return .empty;
+        }
+
+        // Transform linked list of nodes into a more useful data layout
+
+        const ControlPoint = mode.getNamespace().ControlPoint;
+        var control_points: [1 + max_node_count + 1]ControlPoint = undefined;
+
+        var it = subpath.iterator();
+        for (control_points[1..][0..user_node_count]) |*control_point| {
+            const node = it.next().?;
+            control_point.* = .{
+                .xy = .{ node.x, node.y },
+                .tension = node.tension.get(),
+            };
+        }
+        assert(it.peek() == null);
+
+        // Make curve actually intersect the first + last points by adding
+        // additional helper control points
+
+        const node_count = (1 + user_node_count + 1);
+        assert(node_count >= 4);
+
+        control_points[0] = .{
+            .xy = Vec2
+                .fromSlice(&control_points[2].xy)
+                .lerp(.fromSlice(&control_points[1].xy), 2.0)
+                .toArray(),
+            .tension = 0.0,
+        };
+
+        control_points[node_count - 1] = .{
+            .xy = Vec2
+                .fromSlice(&control_points[node_count - 3].xy)
+                .lerp(.fromSlice(&control_points[node_count - 2].xy), 2.0)
+                .toArray(),
+            .tension = 0.0,
+        };
+
+        // Calculate discrete points
+
+        const slice = try mode.getNamespace().discretize(gpa, control_points, granularity, .{});
+        return slice;
+    }
+
+    pub const Iterator = struct {
+        ll_node: ?*Node.List.Node,
+        direction: Direction,
+
+        pub fn next(it: *Iterator) ?*Node {
+            if (it.ll_node) |ll_node| {
+                it.ll_node = switch (it.direction) {
+                    .first_to_last => ll_node.next,
+                    .last_to_first => ll_node.prev,
+                };
+                const node: *Node = @fieldParentPtr("ll_node", ll_node);
+                return node;
+            } else {
+                @branchHint(.unlikely);
+                return null;
+            }
+        }
+
+        pub fn peek(it: *Iterator) ?*Node {
+            if (it.ll_node) |ll_node| {
+                const node: *Node = @fieldParentPtr("ll_node", ll_node);
+                return node;
+            } else {
+                @branchHint(.unlikely);
+                return null;
+            }
+        }
+    };
+    pub fn iterator(subpath: *Subpath) Iterator {
+        return switch (subpath.direction) {
+            .first_to_last => Iterator{
+                .ll_node = subpath.nodes.first,
+                .direction = .first_to_last,
+            },
+            .last_to_first => Iterator{
+                .ll_node = subpath.nodes.last,
+                .direction = .last_to_first,
+            },
+        };
+    }
+
+    const InsertKind = enum {
+        insert_after,
+        insert_before,
+        append,
+        prepend,
+    };
+    fn innerInsert(
+        subpath: *Subpath,
+        comptime kind: InsertKind,
+        existing_node: ?*Node,
+        new_node: *Node,
+    ) bool {
+        assert(subpath.is_used);
+        if (subpath.len == max_subpath_count) {
+            return false;
+        } else {
+            switch (kind) {
+                .insert_after => subpath.nodes.insertAfter(existing_node.?.ll_node, new_node.ll_node),
+                .insert_before => subpath.nodes.insertBefore(existing_node.?.ll_node, new_node.ll_node),
+                .append => subpath.nodes.append(new_node.ll_node),
+                .prepend => subpath.nodes.prepend(new_node.ll_node),
+            }
+            subpath.len += 1;
+            assert(subpath.len <= max_subpath_count);
+            return true;
+        }
+    }
+
+    const PopKind = enum {
+        last,
+        first,
+    };
+    fn innerPop(subpath: *Subpath, comptime kind: PopKind) ?*Node {
+        assert(subpath.is_used);
+        const popped = switch (kind) {
+            .last => subpath.nodes.pop(),
+            .first => subpath.nodes.popFirst(),
+        };
+        if (popped) |ll_node| {
+            const node: *Node = @fieldParentPtr("ll_node", ll_node);
+            subpath.len -= 1;
+            return node;
+        } else {
+            return null;
+        }
+    }
+};
 
 pub const empty = Path{
-    .subpaths = @splat(.{}),
-    .subpath_avail_set = .initFull(),
+    .subpaths = @splat(.empty),
     .nodes = .{},
     .unused_nodes = .{},
     .unused_node_count = max_node_count,
 };
 
-pub fn acquireSubpath(path: *Path) ?*NodeList {
-    const index = path.subpath_avail_set.toggleFirstSet() orelse return null;
-    return &path.subpaths[index];
+pub fn acquireSubpath(path: *Path) ?*Subpath {
+    for (&path.subpaths) |*subpath| {
+        if (subpath.is_used == false) {
+            assert(subpath.nodes.len() == 0);
+            subpath.is_used = true;
+            return subpath;
+        }
+    } else {
+        return null;
+    }
 }
-pub fn releaseSubpath(path: *Path, subpath: *NodeList) void {
-    assert(stdx.containsPointer(NodeStorage, &path.subpaths, subpath));
-    const addr_diff = (@intFromPtr(subpath) - @intFromPtr(&path.subpaths));
-    const index = @divExact(addr_diff, @sizeOf(NodeList));
-    assert(path.subpath_avail_set.isSet(index) == false);
-    path.subpath_avail_set.set(index);
+pub fn releaseSubpath(path: *Path, subpath: *Subpath) void {
+    assert(subpath.is_used);
+    assert(stdx.containsPointer(Subpath, &path.subpaths, subpath));
+    while (subpath.nodes.pop()) |ll_node| {
+        const node: *Node = @fieldParentPtr("ll_node", ll_node);
+        path.releaseNode(node);
+    }
+    subpath.is_used = false;
 }
 
 pub fn acquireNode(path: *Path) ?*Node {
@@ -73,408 +317,10 @@ pub fn unusedNodeCount(path: Path) usize {
     assert(path.unused_node_count <= max_node_count);
     return path.unused_node_count;
 }
-pub fn subpathNodeCount(path: Path, subpath_index: usize) usize {
-    return path.subpaths[subpath_index].len();
-}
-
-pub inline fn build(allocator: Allocator) Allocator.Error!Path.Builder {
-    return Path.Builder.init(allocator);
-}
-
-pub inline fn edit(path: Path, allocator: Allocator) Allocator.Error!Path.Builder {
-    return Path.Builder.initFromPath(allocator, path);
-}
-
-pub fn deinit(path: *Path, allocator: Allocator) void {
-    var segment_count: usize = 0;
-    for (path.subpaths) |subpath| {
-        segment_count += subpath.len;
-    }
-    const subpath_size = mem.alignForward(usize, (path.subpaths.len * @sizeOf(Subpath)), @alignOf(Path.Segment));
-    const segment_size = Subpath.requiredByteSize(segment_count);
-    const size = subpath_size + segment_size;
-    const raw = @as([*]align(@alignOf(Path.Subpath)) u8, @ptrCast(@constCast(@alignCast(path.subpaths.ptr))))[0..size];
-    allocator.free(raw);
-    path.* = undefined;
-}
-
-pub fn discretize(path: Path, allocator: Allocator, granularity: f32) Allocator.Error![][]Vec2 {
-    var total_size = mem.alignForward(usize, (path.subpaths.len * @sizeOf([]Vec2)), @alignOf(Vec2));
-    var max_subpath_size: usize = 0;
-    for (path.subpaths) |subpath| {
-        const point_count = splines.catmull_rom.estimateDiscretePointCount(
-            subpath.items(.start),
-            subpath.items(.tension),
-            granularity,
-        );
-        const size = (point_count * @sizeOf(Vec2));
-        total_size += size;
-        max_subpath_size = @max(max_subpath_size, size);
-    }
-    total_size += max_subpath_size;
-
-    const buffer = try allocator.alignedAlloc(u8, @alignOf([]Vec2), total_size);
-    errdefer allocator.free(buffer);
-
-    var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer);
-    const bufalloc = buffer_allocator.allocator();
-
-    const discretized = try bufalloc.alloc([]Vec2, path.subpaths.len);
-
-    for (path.subpaths, discretized) |subpath, *disc| {
-        disc.* = try splines.catmull_rom.discretize(
-            bufalloc,
-            subpath.items(.start),
-            subpath.items(.tension),
-            granularity,
-        );
-    }
-
-    const used_size = buffer_allocator.end_index;
-    _ = allocator.resize(buffer, used_size);
-
-    return discretized;
-}
-
-pub const Segment = struct {
-    x: f32,
-    y: f32,
-    /// [0,1]
-    tension: f32,
-    next: Index,
-
-    pub const zero = Segment{
-        .x = 0.0,
-        .y = 0.0,
-        .tension = 0.0,
-        .next = .unused,
-    };
-
-    pub const Index = enum(u32) {
-        unused = std.math.maxInt(u32),
-        _,
-
-        pub inline fn from(val: u32) Index {
-            const index: Index = @enumFromInt(val);
-            assert(index != .unused);
-            return index;
-        }
-        pub inline fn asInt(index: Index) u32 {
-            assert(index != .unused);
-            return @intFromEnum(index);
-        }
-    };
-
-    pub const List = struct {
-        inner: Inner,
-        direction: Direction,
-
-        pub const Elem = struct {
-            segment: Path.Segment,
-            list_id: u32,
-        };
-        pub const Inner = std.DoublyLinkedList(Elem);
-
-        pub const Direction = enum {
-            natural,
-            reverse,
-
-            pub inline fn flip(direction: *Direction) void {
-                direction.* = switch (direction.*) {
-                    .natural => .reverse,
-                    .reverse => .natural,
-                };
-            }
-        };
-    };
-
-    pub const Field = std.meta.FieldEnum(Segment);
-
-    /// Use this instead of accessing the `tension` field directly
-    /// to ensure the value stays within its bounds.
-    pub fn setTension(segment: *Segment, tension: f32) void {
-        segment.tension = std.math.clamp(tension, 0.0, 1.0);
-    }
-};
-
-pub const Builder = struct {
-    pool: Path.Builder.Pool,
-    segment_lists: [Path.max_subpath_count]Path.Segment.List,
-    segment_count: usize,
-
-    const SegmentNode = Path.Segment.List.Inner.Node;
-    const Pool = std.heap.MemoryPool(SegmentNode);
-
-    pub fn init(allocator: Allocator) Allocator.Error!Path.Builder {
-        var b: Path.Builder = undefined;
-        b.pool = Path.Builder.Pool.init(allocator);
-        errdefer b.pool.deinit();
-
-        for (&b.segment_lists, 0..) |*list, id| {
-            list.* = .{
-                .inner = .{},
-                .direction = .natural,
-            };
-
-            const first = try b.pool.create();
-            first.data = .{
-                .segment = .zero,
-                .list_id = @intCast(id),
-            };
-            list.inner.prepend(first);
-
-            const last = try b.pool.create();
-            last.data = .{
-                .segment = .zero,
-                .list_id = @intCast(id),
-            };
-            list.inner.append(last);
-        }
-
-        b.segment_count = 0;
-        return b;
-    }
-
-    pub fn initFromPath(allocator: Allocator, path: Path) Allocator.Error!Path.Builder {
-        var b: Path.Builder = undefined;
-        b.pool = Path.Builder.Pool.init(allocator);
-        errdefer b.pool.deinit();
-
-        b.segment_count = 0;
-
-        for (path.subpaths, 0..) |subpath, id| {
-            b.segment_lists[id] = .{
-                .inner = .{},
-                .direction = .natural,
-            };
-            const slc = subpath.slice();
-            for (0..slc.len) |i| {
-                const node = try b.pool.create();
-                node.data = .{
-                    .segment = slc.get(i),
-                    .list_id = @intCast(id),
-                };
-                b.segment_lists[id].inner.append(node);
-            }
-            b.segment_count += (subpath.len - 2);
-        }
-
-        for (path.subpaths.len..Path.max_subpath_count) |id| {
-            const list = &b.segment_lists[id];
-            list.* = .{
-                .inner = .{},
-                .direction = .natural,
-            };
-
-            const first = try b.pool.create();
-            first.data = .{
-                .segment = .zero,
-                .list_id = @intCast(id),
-            };
-            list.inner.prepend(first);
-
-            const last = try b.pool.create();
-            last.data = .{
-                .segment = .zero,
-                .list_id = @intCast(id),
-            };
-            list.inner.append(last);
-        }
-
-        return b;
-    }
-
-    pub fn reset(b: *Path.Builder) void {
-        for (&b.segment_lists) |*list| {
-            var node = list.inner.first.?.next;
-            while (node != list.inner.last) {
-                const to_be_destroyed = node.?;
-                node = to_be_destroyed.next;
-                b.pool.destroy(to_be_destroyed);
-            }
-            list.inner.first.?.next = list.inner.last;
-            list.inner.last.?.prev = list.inner.first;
-        }
-        b.segment_count = 0;
-    }
-
-    pub fn resetSubpath(b: *Path.Builder, path_id: u32) void {
-        const list = &b.segment_lists[path_id];
-        var node = list.inner.first.?.next;
-        while (node != list.inner.last) {
-            const to_be_destroyed = node.?;
-            node = to_be_destroyed.next;
-            b.pool.destroy(to_be_destroyed);
-            b.segment_count -= 1;
-        }
-        list.inner.first.?.next = list.inner.last;
-        list.inner.last.?.prev = list.inner.first;
-    }
-
-    pub fn deinit(b: *Path.Builder) void {
-        b.pool.deinit();
-        b.* = undefined;
-    }
-
-    pub fn finalize(b: *Path.Builder, allocator: Allocator) Allocator.Error!Path {
-        assert(b.segment_count == b.countSegments());
-
-        var subpath_count: usize = 0;
-        var buffer_size: usize = 0;
-        for (&b.segment_lists) |*list| {
-            if (list.inner.len > 2) {
-                subpath_count += 1;
-                buffer_size += Path.Subpath.requiredByteSize(list.inner.len);
-            }
-        }
-        buffer_size += mem.alignForward(usize, (subpath_count * @sizeOf(Path.Subpath)), @alignOf(Path.Segment));
-
-        const buffer = try allocator.alignedAlloc(u8, @alignOf(Path.Subpath), buffer_size);
-        errdefer allocator.free(buffer);
-
-        var buffer_allocator = std.heap.FixedBufferAllocator.init(buffer);
-        const bufalloc = buffer_allocator.allocator();
-
-        const subpaths = try bufalloc.alloc(Path.Subpath, subpath_count);
-
-        var subpath_idx: usize = 0;
-        for (&b.segment_lists) |*list| {
-            const segment_count = list.inner.len;
-            if (segment_count > 2) {
-                const required_size = Path.Subpath.requiredByteSize(segment_count);
-                const subpath_buffer = try bufalloc.alignedAlloc(u8, @alignOf(Path.Segment), required_size);
-                subpaths[subpath_idx] = Path.Subpath.init(subpath_buffer);
-                defer subpath_idx += 1;
-
-                var i: usize = 0;
-                var node: ?*SegmentNode, const next_offset: usize = switch (list.direction) {
-                    .natural => .{ list.inner.first, @offsetOf(SegmentNode, "next") },
-                    .reverse => .{ list.inner.last, @offsetOf(SegmentNode, "prev") },
-                };
-                while (node) |n| : ({
-                    node = @as(*?*SegmentNode, @ptrFromInt(@intFromPtr(n) + next_offset)).*;
-                    i += 1;
-                }) {
-                    subpaths[subpath_idx].set(i, n.data.segment);
-                }
-                assert(i == segment_count);
-            }
-        }
-        assert(buffer_allocator.end_index == buffer_size);
-
-        const path = Path{
-            .subpaths = @ptrCast(subpaths),
-        };
-
-        b.deinit();
-        return path;
-    }
-
-    pub fn reverseSubpath(b: *Path.Builder, path_id: u32) void {
-        b.segment_lists[path_id].direction.flip();
-    }
-
-    // TODO find better way to address segments (hash map?)
-    pub fn addSegment(
-        b: *Path.Builder,
-        start: Vec2,
-        lhs: *SegmentNode,
-        rhs: *SegmentNode,
-    ) Allocator.Error!void {
-        assert(b.segment_count < Path.max_segment_count);
-        assert(lhs.data.list_id == rhs.data.list_id);
-
-        const list_id = lhs.data.list_id;
-
-        const node = try b.pool.create();
-        node.data = .{
-            .segment = .{
-                .start = start,
-                .tension = 0.0,
-            },
-            .list_id = list_id,
-        };
-
-        const prev = if (lhs.next == rhs)
-            lhs
-        else if (rhs.next == lhs)
-            rhs
-        else
-            unreachable;
-
-        b.segment_lists[list_id].inner.insertAfter(prev, node);
-        b.segment_count += 1;
-
-        b.fixEnds(list_id);
-    }
-
-    pub fn removeSegment(b: *Path.Builder, node: *SegmentNode) void {
-        const list_id = node.data.list_id;
-        b.segment_lists[list_id].inner.remove(node);
-        b.segment_count -= 1;
-        b.pool.destroy(node);
-        b.fixEnds(list_id);
-    }
-
-    pub fn editSegment(
-        b: *Path.Builder,
-        node: *SegmentNode,
-        comptime field: Path.Segment.Field,
-        new_value: @FieldType(Path.Segment, @tagName(field)),
-    ) void {
-        comptime switch (field) {
-            .start => {
-                node.data.segment.start = new_value;
-                b.fixEnds(node.data.list_id);
-            },
-            .tension => {
-                node.data.segment.setTension(new_value);
-            },
-        };
-    }
-
-    fn fixEnds(b: *Path.Builder, list_id: u32) void {
-        if (b.segment_lists[list_id].inner.len < 4) {
-            return;
-        }
-
-        const first = b.segment_lists[list_id].inner.first.?;
-        const f_to = first.next.?;
-        const f_from = f_to.next.?;
-
-        first.data.segment = Path.Builder.extrapolate(f_from.data.segment, f_to.data.segment);
-
-        const last = b.segment_lists[list_id].inner.last.?;
-        const l_to = last.prev.?;
-        const l_from = l_to.prev.?;
-
-        last.data.segment = Path.Builder.extrapolate(l_from.data.segment, l_to.data.segment);
-    }
-
-    fn extrapolate(from: Path.Segment, to: Path.Segment) Path.Segment {
-        const p = from.start;
-        const q = to.start;
-        const ext = Vec2.lerp(p, q, 2.0);
-        return .{
-            .start = ext,
-            .tension = 0.0,
-        };
-    }
-
-    fn countSegments(b: *const Path.Builder) usize {
-        var count: usize = 0;
-        for (&b.segment_lists) |*list| {
-            count += (list.inner.len - 2);
-        }
-        return count;
-    }
-};
 
 const std = @import("std");
 const stdx = @import("stdx");
-const splines = @import("../splines.zig");
 const zalgebra = @import("zalgebra");
-const domath = @import("domath");
 
 const mem = std.mem;
 const testing = std.testing;
@@ -483,22 +329,3 @@ const Allocator = mem.Allocator;
 const Vec2 = zalgebra.Vec2;
 
 const assert = std.debug.assert;
-
-test "build Path" {
-    const allocator = testing.allocator;
-    var b = try Path.build(allocator);
-    errdefer b.deinit();
-
-    const p1 = Vec2.new(5.0, 5.0);
-    const p2 = Vec2.new(2.0, 3.0);
-
-    try b.addSegment(p1, b.segment_lists[0].inner.last.?, b.segment_lists[0].inner.first.?);
-    try b.addSegment(p2, b.segment_lists[0].inner.first.?, b.segment_lists[0].inner.first.?.next.?);
-    b.removeSegment(b.segment_lists[0].inner.last.?.prev.?);
-
-    var path = try b.finalize(testing.allocator);
-    defer path.deinit(testing.allocator);
-
-    const points = path.subpaths[0].items(.start);
-    try testing.expectEqual(p2, points[1]);
-}
