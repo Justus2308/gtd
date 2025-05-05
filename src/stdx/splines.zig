@@ -117,8 +117,10 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
             var samples = CatmullRomDiscretized.empty;
             errdefer samples.deinit(gpa);
 
+            // This is almost always a perfect estimation if our
+            // integration is accurate enough.
             const estimated_sample_count = estimateDiscretePointCount(control_points, sample_dist);
-            try samples.ensureTotalCapacity(gpa, estimated_sample_count);
+            try samples.setCapacity(gpa, estimated_sample_count);
 
             var carry: F = 0.0;
             for (0..(control_points.len -| 3)) |i| {
@@ -209,7 +211,6 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
                 // std.debug.print("seg={d}, idx={d}, len={d}, required_len={d}, carry={d}\n", .{ i, samples.items.len -| 1, len, required_len, carry });
             }
 
-            samples.shrinkAndFree(gpa, samples.len);
             const slice = samples.toOwnedSlice();
             return slice;
         }

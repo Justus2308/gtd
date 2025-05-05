@@ -348,5 +348,5 @@ test mapFileToMemory {
 }
 
 test {
-    testing.refAllDeclsRecursive(@This());
+    testing.refAllDecls(@This());
 }
