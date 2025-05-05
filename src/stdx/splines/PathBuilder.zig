@@ -4,8 +4,8 @@
 //! `Subpath`s can be individually discretized to 2D coordinates.
 
 subpaths: [max_subpath_count]Subpath,
-subpath_avail_set: Subpath.AvailSet,
-nodes: Node.Storage,
+subpath_avail_set: Subpath.BitSet,
+node_storage: Node.Storage,
 unused_nodes: Node.List,
 unused_node_count: usize,
 
@@ -17,7 +17,7 @@ pub const max_node_count = 64;
 pub const init = PathBuilder{
     .subpaths = undefined,
     .subpath_avail_set = .initFull(),
-    .nodes = .empty,
+    .node_storage = .empty,
     .unused_nodes = .empty,
     .unused_node_count = max_node_count,
 };
@@ -35,9 +35,9 @@ pub fn acquireSubpath(pb: *PathBuilder) ?*Subpath {
     return subpath;
 }
 
-/// Invalidates `subpath`. Accessing `subpath` after this function
-/// finishes causes undefined behavior.
-/// Releases all `Node`s still left in `subpath`.
+/// Invalidates `subpath`. Accessing `subpath` after calling this
+/// function causes undefined behavior.
+/// Releases all `Node`s in `subpath`.
 pub fn releaseSubpath(pb: *PathBuilder, subpath: *Subpath) void {
     assert(stdx.containsPointer(Subpath, &pb.subpaths, subpath));
     subpath.clear(pb);
@@ -50,26 +50,26 @@ pub fn releaseSubpath(pb: *PathBuilder, subpath: *Subpath) void {
 
 /// Returns a pointer to a new `Node` or `null` if there are no
 /// nodes available.
-pub fn acquireNode(pb: *PathBuilder) ?*Node {
+fn acquireNode(pb: *PathBuilder) ?*Node {
     if (pb.unused_node_count == 0) {
         return null;
     } else {
         assert(pb.unused_node_count <= max_node_count);
         pb.unused_node_count -= 1;
     }
-    return pb.unused_nodes.pop(&pb.nodes) orelse
-        pb.nodes.inner.addOneAssumeCapacity();
+    return pb.unused_nodes.pop(&pb.node_storage) orelse
+        pb.node_storage.inner.addOneAssumeCapacity();
 }
 
-/// Invalidates `node`. Accessing `node` after this function
-/// finishes causes undefined behavior.
-pub fn releaseNode(pb: *PathBuilder, node: *Node) void {
+/// Invalidates `node`. Accessing `node` after calling this
+/// function causes undefined behavior.
+fn releaseNode(pb: *PathBuilder, node: *Node) void {
     node.* = undefined;
-    if (&pb.nodes.inner.buffer[pb.nodes.inner.len - 1] == node) {
-        _ = pb.nodes.inner.pop().?;
+    if (&pb.node_storage.inner.buffer[pb.node_storage.inner.len - 1] == node) {
+        _ = pb.node_storage.inner.pop().?;
     } else {
-        assert(stdx.containsPointer(Node, pb.nodes.inner.constSlice(), node));
-        pb.unused_nodes.append(&pb.nodes, node);
+        assert(stdx.containsPointer(Node, pb.node_storage.inner.constSlice(), node));
+        pb.unused_nodes.append(&pb.node_storage, node);
     }
     pb.unused_node_count += 1;
     assert(pb.unused_node_count <= max_node_count);
@@ -81,6 +81,30 @@ pub fn usedNodeCount(pb: PathBuilder) usize {
 pub fn unusedNodeCount(pb: PathBuilder) usize {
     assert(pb.unused_node_count <= max_node_count);
     return pb.unused_node_count;
+}
+
+pub const Iterator = struct {
+    subpaths: *[max_subpath_count]Subpath,
+    active_set: Subpath.BitSet,
+
+    pub fn next(it: *Iterator) ?*Subpath {
+        const index = it.active_set.toggleFirstSet() orelse return null;
+        return &it.subpaths[index];
+    }
+
+    pub fn peek(it: *Iterator) ?*Subpath {
+        const index = it.active_set.findFirstSet() orelse return null;
+        return &it.subpaths[index];
+    }
+};
+
+/// Iterate over all `Subpath`s that are active at
+/// the time this function is called.
+pub fn iterator(pb: *PathBuilder) Iterator {
+    return Iterator{
+        .subpaths = &pb.subpaths,
+        .active_set = pb.subpath_avail_set.complement(),
+    };
 }
 
 /// Modifying `next` or `prev` manually causes undefined behavior,
@@ -310,11 +334,15 @@ pub const Node = struct {
                 }
             }
         };
+
+        /// Iterate over all nodes in this `Subpath`.
+        /// The state of this iterator is affected by
+        /// changes to the underlying `Subpath`.
         pub fn iterator(
             list: Node.List,
             storage: *Node.Storage,
             direction: Node.List.Direction,
-        ) Iterator {
+        ) Node.List.Iterator {
             return switch (direction) {
                 .first_to_last => .{
                     .next_node = storage.getNode(list.first),
@@ -333,10 +361,10 @@ pub const Node = struct {
 
 pub const Subpath = struct {
     nodes: Node.List,
-    len: u8,
+    len: u16,
     direction: Node.List.Direction,
 
-    pub const AvailSet = std.StaticBitSet(max_subpath_count);
+    pub const BitSet = std.bit_set.IntegerBitSet(max_subpath_count);
 
     pub const empty = Subpath{
         .nodes = .empty,
@@ -350,7 +378,7 @@ pub const Subpath = struct {
     }
 
     pub fn contains(subpath: Subpath, pb: *PathBuilder, node: *Node) bool {
-        var it = subpath.nodes.iterator(&pb.nodes, .first_to_last);
+        var it = subpath.nodes.iterator(&pb.node_storage, .first_to_last);
         while (it.next()) |path_node| {
             if (node == path_node) {
                 return true;
@@ -392,7 +420,7 @@ pub const Subpath = struct {
 
     pub fn remove(subpath: *Subpath, pb: *PathBuilder, node: *Node) void {
         assert(subpath.contains(node));
-        subpath.nodes.remove(pb.nodes, node);
+        subpath.nodes.remove(&pb.node_storage, node);
         subpath.len -= 1;
         pb.releaseNode(node);
     }
@@ -412,7 +440,7 @@ pub const Subpath = struct {
         const new_node = pb.acquireNode() orelse return null;
         assert(subpath.len < max_node_count);
 
-        const storage = &pb.nodes;
+        const storage = &pb.node_storage;
         switch (kind) {
             .insert_after => subpath.nodes.insertAfter(storage, existing_node.?, new_node),
             .insert_before => subpath.nodes.insertBefore(storage, existing_node.?, new_node),
@@ -429,7 +457,7 @@ pub const Subpath = struct {
         first,
     };
     fn innerPop(subpath: *Subpath, comptime kind: PopKind, pb: *PathBuilder) bool {
-        const storage = &pb.nodes;
+        const storage = &pb.node_storage;
         const popped = switch (kind) {
             .last => subpath.nodes.pop(storage),
             .first => subpath.nodes.popFirst(storage),
@@ -446,9 +474,11 @@ pub const Subpath = struct {
 
     pub const Discretized = stdx.splines.CatmullRomDiscretized;
 
+    /// For per-frame calculations.
     pub fn discretizeFast(subpath: *Subpath, arena: Allocator, pb: *PathBuilder) Allocator.Error!Discretized.Slice {
         return subpath.discretize(.fast, arena, pb, 0.1);
     }
+    /// For precise calculations.
     pub fn discretizePrecise(subpath: *Subpath, gpa: Allocator, pb: *PathBuilder) Allocator.Error!Discretized.Slice {
         return subpath.discretize(.precise, gpa, pb, 0.01);
     }
@@ -474,8 +504,8 @@ pub const Subpath = struct {
         pb: *PathBuilder,
         granularity: f32,
     ) Allocator.Error!Discretized.Slice {
-        const user_node_count = subpath.count();
-        if (user_node_count < 2) {
+        const orig_node_count = subpath.count();
+        if (orig_node_count < 2) {
             return .empty;
         }
 
@@ -485,7 +515,7 @@ pub const Subpath = struct {
         var control_points: [1 + max_node_count + 1]ControlPoint = undefined;
 
         var it = subpath.iterator(pb);
-        for (control_points[1..][0..user_node_count]) |*control_point| {
+        for (control_points[1..][0..orig_node_count]) |*control_point| {
             const node = it.next().?;
             control_point.* = .{
                 .xy = .{ node.x, node.y },
@@ -497,7 +527,7 @@ pub const Subpath = struct {
         // Make curve actually intersect the first + last points by adding
         // additional helper control points
 
-        const node_count = (1 + user_node_count + 1);
+        const node_count = (1 + orig_node_count + 1);
         assert(node_count >= 4);
 
         control_points[0] = .{
@@ -524,7 +554,7 @@ pub const Subpath = struct {
     }
 
     pub fn iterator(subpath: *Subpath, pb: *PathBuilder) Node.List.Iterator {
-        return subpath.nodes.iterator(&pb.nodes, subpath.direction);
+        return subpath.nodes.iterator(&pb.node_storage, subpath.direction);
     }
 };
 
@@ -542,8 +572,8 @@ const assert = std.debug.assert;
 
 // TESTS
 
-fn expectExisting(value: anytype) !@typeInfo(@TypeOf(value)).optional.child {
-    return value orelse return error.TestExpectedExisting;
+fn expectExisting(optional: anytype) !@typeInfo(@TypeOf(optional)).optional.child {
+    return optional orelse error.TestExpectedExisting;
 }
 
 test "basic usage" {
@@ -557,11 +587,24 @@ test "basic usage" {
     try testing.expect(s2 != s3);
     try testing.expect(s3 != s1);
 
+    var sub_it = pb.iterator();
+    try testing.expectEqual(s1, try expectExisting(sub_it.peek()));
+    try testing.expectEqual(s1, try expectExisting(sub_it.next()));
+    try testing.expectEqual(s2, try expectExisting(sub_it.next()));
+    try testing.expectEqual(s3, try expectExisting(sub_it.next()));
+    try testing.expectEqual(null, sub_it.next());
+    try testing.expectEqual(null, sub_it.next());
+
     const n11: *Node = try expectExisting(s1.append(&pb));
     const n12: *Node = try expectExisting(s1.prepend(&pb));
     const n13: *Node = try expectExisting(s1.insertAfter(&pb, n12));
 
+    try testing.expect(n11 != n12);
+    try testing.expect(n12 != n13);
+    try testing.expect(n13 != n11);
+
     var it1 = s1.iterator(&pb);
+    try testing.expectEqual(n12, try expectExisting(it1.peek()));
     try testing.expectEqual(n12, try expectExisting(it1.next()));
     try testing.expectEqual(n13, try expectExisting(it1.next()));
     try testing.expectEqual(n11, try expectExisting(it1.next()));
@@ -578,9 +621,38 @@ test "basic usage" {
     var it2 = s2.iterator(&pb);
     try testing.expectEqual(n23, try expectExisting(it2.next()));
     try testing.expectEqual(n21, try expectExisting(it2.next()));
+    try testing.expectEqual(null, it2.next());
 
     const prev_count = pb.usedNodeCount();
     _ = try expectExisting(s3.append(&pb));
     pb.releaseSubpath(s3);
     try testing.expectEqual(prev_count, pb.usedNodeCount());
+}
+
+test "resource exhaustion" {
+    var pb = PathBuilder.init;
+
+    for (0..max_subpath_count) |_| {
+        _ = pb.acquireSubpath();
+    }
+    try testing.expectEqual(null, pb.acquireSubpath());
+
+    var it = pb.iterator();
+    var s1: *Subpath = try expectExisting(it.next());
+    pb.releaseSubpath(s1);
+
+    s1 = try expectExisting(pb.acquireSubpath());
+    try testing.expectEqual(null, pb.acquireSubpath());
+
+    for (0..max_node_count) |_| {
+        _ = s1.append(&pb);
+    }
+    try testing.expectEqual(null, s1.append(&pb));
+    try testing.expectEqual(max_node_count, s1.count());
+    try testing.expectEqual(0, pb.unusedNodeCount());
+
+    try testing.expect(s1.pop(&pb));
+
+    _ = try expectExisting(s1.append(&pb));
+    try testing.expectEqual(null, s1.append(&pb));
 }
