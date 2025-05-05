@@ -10,7 +10,7 @@ const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 const log = std.log.scoped(.splines);
 
-pub const Path = @import("splines/Path.zig");
+pub const PathBuilder = @import("splines/PathBuilder.zig");
 
 pub fn Integrator(comptime F: type) type {
     return union(enum) {
@@ -147,7 +147,7 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
                 var required_len = carry;
                 while (true) : ({
                     // estimate next t based on previous t and total length of curve
-                    const t_step = 0.5 * ((t - t_prev) + linear_t_step);
+                    const t_step = (0.5 * ((t - t_prev) + linear_t_step));
                     t_prev = t;
                     t += t_step;
                     required_len += sample_dist;
@@ -290,6 +290,8 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
 }
 
 test {
+    testing.refAllDecls(@This());
+
     testing.refAllDeclsRecursive(catmull_rom(f32, .{ .trapezoid = .{} }));
     testing.refAllDeclsRecursive(catmull_rom(f64, .{ .trapezoid = .{} }));
     testing.refAllDeclsRecursive(catmull_rom(f32, .{ .simpson_adaptive = .{} }));

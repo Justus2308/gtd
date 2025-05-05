@@ -1,5 +1,5 @@
 //! Allocation-free data structure that acts as a fixed-size memory pool
-//! for `Subpath`s and `Path.Node`s.
+//! for `Subpath`s and `Node`s.
 //! The base data structure does not contain any pointers.
 //! `Subpath`s can be individually discretized to 2D coordinates.
 
@@ -9,12 +9,12 @@ nodes: Node.Storage,
 unused_nodes: Node.List,
 unused_node_count: usize,
 
-const Path = @This();
+const PathBuilder = @This();
 
 pub const max_subpath_count = 8;
 pub const max_node_count = 64;
 
-pub const empty = Path{
+pub const init = PathBuilder{
     .subpaths = undefined,
     .subpath_avail_set = .initFull(),
     .nodes = .empty,
@@ -22,74 +22,87 @@ pub const empty = Path{
     .unused_node_count = max_node_count,
 };
 
+pub fn reset(pb: *PathBuilder) void {
+    pb.* = .init;
+}
+
 /// Returns a pointer to a new `Subpath` or `null` if there are no
 /// subpaths available.
-pub fn acquireSubpath(path: *Path) ?*Subpath {
-    const index = path.subpath_avail_set.toggleFirstSet() orelse return null;
-    const subpath = &path.subpaths[index];
+pub fn acquireSubpath(pb: *PathBuilder) ?*Subpath {
+    const index = pb.subpath_avail_set.toggleFirstSet() orelse return null;
+    const subpath = &pb.subpaths[index];
     subpath.* = .empty;
     return subpath;
 }
 
 /// Invalidates `subpath`. Accessing `subpath` after this function
 /// finishes causes undefined behavior.
-pub fn releaseSubpath(path: *Path, subpath: *Subpath) void {
-    assert(stdx.containsPointer(Subpath, &path.subpaths, subpath));
-    path.clearSubpath(subpath);
+/// Releases all `Node`s still left in `subpath`.
+pub fn releaseSubpath(pb: *PathBuilder, subpath: *Subpath) void {
+    assert(stdx.containsPointer(Subpath, &pb.subpaths, subpath));
+    subpath.clear(pb);
     subpath.* = undefined;
-    const offset = (@intFromPtr(subpath) - @intFromPtr(&path.subpaths));
+    const offset = (@intFromPtr(subpath) - @intFromPtr(&pb.subpaths));
     const index = @divExact(offset, @sizeOf(Subpath));
-    assert(path.subpath_avail_set.isSet(index) == false);
-    path.subpath_avail_set.set(index);
-}
-
-pub fn clearSubpath(path: *Path, subpath: *Subpath) void {
-    while (subpath.pop()) |node| {
-        path.releaseNode(node);
-    }
+    assert(pb.subpath_avail_set.isSet(index) == false);
+    pb.subpath_avail_set.set(index);
 }
 
 /// Returns a pointer to a new `Node` or `null` if there are no
 /// nodes available.
-pub fn acquireNode(path: *Path) ?*Node {
-    if (path.unused_node_count == 0) {
+pub fn acquireNode(pb: *PathBuilder) ?*Node {
+    if (pb.unused_node_count == 0) {
         return null;
     } else {
-        assert(path.unused_node_count <= max_node_count);
-        path.unused_node_count -= 1;
+        assert(pb.unused_node_count <= max_node_count);
+        pb.unused_node_count -= 1;
     }
-    return path.unused_nodes.pop(path.nodes) orelse
-        path.nodes.inner.addOneAssumeCapacity();
+    return pb.unused_nodes.pop(&pb.nodes) orelse
+        pb.nodes.inner.addOneAssumeCapacity();
 }
 
 /// Invalidates `node`. Accessing `node` after this function
 /// finishes causes undefined behavior.
-pub fn releaseNode(path: *Path, node: *Node) void {
+pub fn releaseNode(pb: *PathBuilder, node: *Node) void {
     node.* = undefined;
-    if (&path.nodes.buffer[path.nodes.inner.len - 1] == node) {
-        _ = path.nodes.inner.pop().?;
+    if (&pb.nodes.inner.buffer[pb.nodes.inner.len - 1] == node) {
+        _ = pb.nodes.inner.pop().?;
     } else {
-        assert(stdx.containsPointer(Node, path.nodes.inner.constSlice(), node));
-        path.unused_nodes.append(path.nodes, node);
+        assert(stdx.containsPointer(Node, pb.nodes.inner.constSlice(), node));
+        pb.unused_nodes.append(&pb.nodes, node);
     }
-    path.unused_node_count += 1;
-    assert(path.unused_node_count <= max_node_count);
+    pb.unused_node_count += 1;
+    assert(pb.unused_node_count <= max_node_count);
 }
 
-pub fn usedNodeCount(path: Path) usize {
-    return (max_node_count - path.unusedNodeCount());
+pub fn usedNodeCount(pb: PathBuilder) usize {
+    return (max_node_count - pb.unusedNodeCount());
 }
-pub fn unusedNodeCount(path: Path) usize {
-    assert(path.unused_node_count <= max_node_count);
-    return path.unused_node_count;
+pub fn unusedNodeCount(pb: PathBuilder) usize {
+    assert(pb.unused_node_count <= max_node_count);
+    return pb.unused_node_count;
 }
 
+/// Modifying `next` or `prev` manually causes undefined behavior,
+/// use `get()`/`set()` and the `Subpath` API to interact with `Node`s.
 pub const Node = struct {
     x: f32,
     y: f32,
     tension: stdx.BoundedValue(f32, 0, 1),
     next: Index,
     prev: Index,
+
+    pub inline fn get(node: Node) Node {
+        var copy = node;
+        copy.next = undefined;
+        copy.prev = undefined;
+        return copy;
+    }
+    pub inline fn set(node: *Node, x: ?f32, y: ?f32, tension: ?f32) void {
+        if (x) |x_val| node.x = x_val;
+        if (y) |y_val| node.y = y_val;
+        if (tension) |tension_val| node.tension.set(tension_val);
+    }
 
     pub const Index = enum(u16) {
         none = std.math.maxInt(u16),
@@ -115,14 +128,14 @@ pub const Node = struct {
             if (index == .none) {
                 return null;
             }
-            assert(index.asInt() < storage.len);
+            assert(index.asInt() < storage.inner.len);
             return &storage.inner.slice()[index.asInt()];
         }
         /// This compiles to a subtraction and a bitshift
         /// (as long as `@sizeOf(Node)` is a power of two).
         pub fn getIndex(storage: *const Node.Storage, node: *const Node) Node.Index {
             assert(stdx.containsPointer(Node, storage.inner.constSlice(), node));
-            const offset = (@intFromPtr(node) - @intFromPtr(storage.constSlice()));
+            const offset = (@intFromPtr(node) - @intFromPtr(&storage.inner.buffer));
             return @enumFromInt(@as(u16, @intCast(@divExact(offset, @sizeOf(Node)))));
         }
         comptime {
@@ -172,17 +185,17 @@ pub const Node = struct {
         pub fn append(list: *Node.List, storage: *Node.Storage, new_node: *Node) void {
             if (storage.getNode(list.last)) |last| {
                 // Insert after last.
-                list.insertAfter(last, new_node);
+                list.insertAfter(storage, last, new_node);
             } else {
                 // Empty list.
-                list.prepend(new_node);
+                list.prepend(storage, new_node);
             }
         }
 
         pub fn prepend(list: *Node.List, storage: *Node.Storage, new_node: *Node) void {
             if (storage.getNode(list.first)) |first| {
                 // Insert before first.
-                list.insertBefore(first, new_node);
+                list.insertBefore(storage, first, new_node);
             } else {
                 // Empty list.
                 const new_node_index = storage.getIndex(new_node);
@@ -213,13 +226,13 @@ pub const Node = struct {
 
         pub fn pop(list: *Node.List, storage: *Node.Storage) ?*Node {
             const last = storage.getNode(list.last) orelse return null;
-            list.remove(last);
+            list.remove(storage, last);
             return last;
         }
 
         pub fn popFirst(list: *Node.List, storage: *Node.Storage) ?*Node {
             const first = storage.getNode(list.first) orelse return null;
-            list.remove(first);
+            list.remove(storage, first);
             return first;
         }
 
@@ -248,8 +261,8 @@ pub const Node = struct {
             vtable: *const VTable,
 
             pub const VTable = struct {
-                next: fn (it: *Node.List.Iterator) ?*Node,
-                prev: fn (it: *Node.List.Iterator) ?*Node,
+                next: *const fn (it: *Node.List.Iterator) ?*Node,
+                prev: *const fn (it: *Node.List.Iterator) ?*Node,
             };
             pub const vtables = std.enums.EnumFieldStruct(
                 Node.List.Direction,
@@ -257,12 +270,12 @@ pub const Node = struct {
                 null,
             ){
                 .first_to_last = &.{
-                    .next = Node.List.Iterator.innerNext,
-                    .prev = Node.List.Iterator.innerPrev,
+                    .next = &Node.List.Iterator.innerNodeNext,
+                    .prev = &Node.List.Iterator.innerNodePrev,
                 },
                 .last_to_first = &.{
-                    .next = Node.List.Iterator.innerPrev,
-                    .prev = Node.List.Iterator.innerNext,
+                    .next = &Node.List.Iterator.innerNodePrev,
+                    .prev = &Node.List.Iterator.innerNodeNext,
                 },
             };
 
@@ -278,22 +291,23 @@ pub const Node = struct {
                 return it.next_node;
             }
 
-            fn innerNext(it: *Node.List.Iterator) ?*Node {
-                return it.innerIter(.first_to_last);
-            }
-            fn innerPrev(it: *Node.List.Iterator) ?*Node {
-                return it.innerIter(.last_to_first);
-            }
-            fn innerIter(it: *Node.List.Iterator, comptime direction: Node.List.Direction) ?*Node {
-                const node = it.next_node orelse {
+            fn innerNodeNext(it: *Node.List.Iterator) ?*Node {
+                if (it.next_node) |node| {
+                    it.next_node = it.storage.getNode(node.next);
+                    return node;
+                } else {
                     @branchHint(.unlikely);
                     return null;
-                };
-                it.next_node = switch (direction) {
-                    .first_to_last => it.storage.getNode(node.next),
-                    .last_to_first => it.storage.getNode(node.prev),
-                };
-                return node;
+                }
+            }
+            fn innerNodePrev(it: *Node.List.Iterator) ?*Node {
+                if (it.next_node) |node| {
+                    it.next_node = it.storage.getNode(node.prev);
+                    return node;
+                } else {
+                    @branchHint(.unlikely);
+                    return null;
+                }
             }
         };
         pub fn iterator(
@@ -325,7 +339,7 @@ pub const Subpath = struct {
     pub const AvailSet = std.StaticBitSet(max_subpath_count);
 
     pub const empty = Subpath{
-        .nodes = .{},
+        .nodes = .empty,
         .len = 0,
         .direction = .first_to_last,
     };
@@ -335,8 +349,8 @@ pub const Subpath = struct {
         return @intCast(subpath.len);
     }
 
-    pub fn contains(subpath: Subpath, path: *Path, node: *Node) bool {
-        var it = subpath.nodes.iterator(&path.nodes, .first_to_last);
+    pub fn contains(subpath: Subpath, pb: *PathBuilder, node: *Node) bool {
+        var it = subpath.nodes.iterator(&pb.nodes, .first_to_last);
         while (it.next()) |path_node| {
             if (node == path_node) {
                 return true;
@@ -351,31 +365,36 @@ pub const Subpath = struct {
         subpath.direction = subpath.direction.flipped();
     }
 
-    pub fn append(subpath: *Subpath, path: *Path, new_node: *Node) bool {
-        return subpath.innerInsert(.append, path, null, new_node);
-    }
-    pub fn prepend(subpath: *Subpath, path: *Path, new_node: *Node) bool {
-        return subpath.innerInsert(.prepend, path, null, new_node);
+    pub fn clear(subpath: *Subpath, pb: *PathBuilder) void {
+        while (subpath.pop(pb)) {}
     }
 
-    pub fn insertAfter(subpath: *Subpath, path: *Path, existing_node: *Node, new_node: *Node) bool {
-        return subpath.innerInsert(.insert_after, path, existing_node, new_node);
+    pub fn append(subpath: *Subpath, pb: *PathBuilder) ?*Node {
+        return subpath.innerInsert(.append, pb, null);
     }
-    pub fn insertBefore(subpath: *Subpath, path: *Path, existing_node: *Node, new_node: *Node) bool {
-        return subpath.innerInsert(.insert_before, path, existing_node, new_node);
-    }
-
-    pub fn pop(subpath: *Subpath, path: *Path) ?*Node {
-        return subpath.innerPop(.last, path);
-    }
-    pub fn popFirst(subpath: *Subpath, path: *Path) ?*Node {
-        return subpath.innerPop(.first, path);
+    pub fn prepend(subpath: *Subpath, pb: *PathBuilder) ?*Node {
+        return subpath.innerInsert(.prepend, pb, null);
     }
 
-    pub fn remove(subpath: *Subpath, path: *Path, node: *Node) void {
+    pub fn insertAfter(subpath: *Subpath, pb: *PathBuilder, existing_node: *Node) ?*Node {
+        return subpath.innerInsert(.insert_after, pb, existing_node);
+    }
+    pub fn insertBefore(subpath: *Subpath, pb: *PathBuilder, existing_node: *Node) ?*Node {
+        return subpath.innerInsert(.insert_before, pb, existing_node);
+    }
+
+    pub fn pop(subpath: *Subpath, pb: *PathBuilder) bool {
+        return subpath.innerPop(.last, pb);
+    }
+    pub fn popFirst(subpath: *Subpath, pb: *PathBuilder) bool {
+        return subpath.innerPop(.first, pb);
+    }
+
+    pub fn remove(subpath: *Subpath, pb: *PathBuilder, node: *Node) void {
         assert(subpath.contains(node));
-        subpath.nodes.remove(path.nodes, node);
+        subpath.nodes.remove(pb.nodes, node);
         subpath.len -= 1;
+        pb.releaseNode(node);
     }
 
     const InsertKind = enum {
@@ -387,45 +406,51 @@ pub const Subpath = struct {
     fn innerInsert(
         subpath: *Subpath,
         comptime kind: InsertKind,
-        path: *Path,
+        pb: *PathBuilder,
         existing_node: ?*Node,
-        new_node: *Node,
-    ) bool {
-        if (subpath.len == max_node_count) {
-            return false;
-        } else {
-            const storage = &path.nodes;
-            switch (kind) {
-                .insert_after => subpath.nodes.insertAfter(storage, existing_node.?, new_node),
-                .insert_before => subpath.nodes.insertBefore(storage, existing_node.?, new_node),
-                .append => subpath.nodes.append(storage, new_node),
-                .prepend => subpath.nodes.prepend(storage, new_node),
-            }
-            subpath.len += 1;
-            assert(subpath.len <= max_subpath_count);
-            return true;
+    ) ?*Node {
+        const new_node = pb.acquireNode() orelse return null;
+        assert(subpath.len < max_node_count);
+
+        const storage = &pb.nodes;
+        switch (kind) {
+            .insert_after => subpath.nodes.insertAfter(storage, existing_node.?, new_node),
+            .insert_before => subpath.nodes.insertBefore(storage, existing_node.?, new_node),
+            .append => subpath.nodes.append(storage, new_node),
+            .prepend => subpath.nodes.prepend(storage, new_node),
         }
+        subpath.len += 1;
+        assert(subpath.len <= max_node_count);
+        return new_node;
     }
 
     const PopKind = enum {
         last,
         first,
     };
-    fn innerPop(subpath: *Subpath, comptime kind: PopKind, path: *Path) ?*Node {
-        const storage = &path.nodes;
-        return switch (kind) {
+    fn innerPop(subpath: *Subpath, comptime kind: PopKind, pb: *PathBuilder) bool {
+        const storage = &pb.nodes;
+        const popped = switch (kind) {
             .last => subpath.nodes.pop(storage),
             .first => subpath.nodes.popFirst(storage),
         };
+        if (popped) |node| {
+            assert(subpath.len >= 1);
+            subpath.len -= 1;
+            pb.releaseNode(node);
+            return true;
+        } else {
+            return false;
+        }
     }
 
     pub const Discretized = stdx.splines.CatmullRomDiscretized;
 
-    pub fn discretizeFast(subpath: *Subpath, arena: Allocator, path: *Path) Allocator.Error!Discretized.Slice {
-        return subpath.discretize(.fast, arena, path, 0.1);
+    pub fn discretizeFast(subpath: *Subpath, arena: Allocator, pb: *PathBuilder) Allocator.Error!Discretized.Slice {
+        return subpath.discretize(.fast, arena, pb, 0.1);
     }
-    pub fn discretizePrecise(subpath: *Subpath, gpa: Allocator, path: *Path) Allocator.Error!Discretized.Slice {
-        return subpath.discretize(.precise, gpa, path, 0.01);
+    pub fn discretizePrecise(subpath: *Subpath, gpa: Allocator, pb: *PathBuilder) Allocator.Error!Discretized.Slice {
+        return subpath.discretize(.precise, gpa, pb, 0.01);
     }
 
     pub const DiscretizeMode = enum {
@@ -445,8 +470,8 @@ pub const Subpath = struct {
     pub fn discretize(
         subpath: *Subpath,
         comptime mode: DiscretizeMode,
-        gpa: Allocator,
-        path: *Path,
+        allocator: Allocator,
+        pb: *PathBuilder,
         granularity: f32,
     ) Allocator.Error!Discretized.Slice {
         const user_node_count = subpath.count();
@@ -459,7 +484,7 @@ pub const Subpath = struct {
         const ControlPoint = mode.getNamespace().ControlPoint;
         var control_points: [1 + max_node_count + 1]ControlPoint = undefined;
 
-        var it = subpath.iterator(path);
+        var it = subpath.iterator(pb);
         for (control_points[1..][0..user_node_count]) |*control_point| {
             const node = it.next().?;
             control_point.* = .{
@@ -493,12 +518,13 @@ pub const Subpath = struct {
 
         // Calculate discrete points
 
-        const slice = try mode.getNamespace().discretize(gpa, control_points, granularity, .{});
+        const slice = try mode.getNamespace()
+            .discretize(allocator, control_points, granularity, .{});
         return slice;
     }
 
-    pub fn iterator(subpath: *Subpath, path: *Path) Node.List.Iterator {
-        return subpath.nodes.iterator(&path.nodes, subpath.direction);
+    pub fn iterator(subpath: *Subpath, pb: *PathBuilder) Node.List.Iterator {
+        return subpath.nodes.iterator(&pb.nodes, subpath.direction);
     }
 };
 
@@ -513,3 +539,48 @@ const Allocator = mem.Allocator;
 const Vec2 = zalgebra.Vec2;
 
 const assert = std.debug.assert;
+
+// TESTS
+
+fn expectExisting(value: anytype) !@typeInfo(@TypeOf(value)).optional.child {
+    return value orelse return error.TestExpectedExisting;
+}
+
+test "basic usage" {
+    var pb = PathBuilder.init;
+
+    const s1: *Subpath = try expectExisting(pb.acquireSubpath());
+    const s2: *Subpath = try expectExisting(pb.acquireSubpath());
+    const s3: *Subpath = try expectExisting(pb.acquireSubpath());
+
+    try testing.expect(s1 != s2);
+    try testing.expect(s2 != s3);
+    try testing.expect(s3 != s1);
+
+    const n11: *Node = try expectExisting(s1.append(&pb));
+    const n12: *Node = try expectExisting(s1.prepend(&pb));
+    const n13: *Node = try expectExisting(s1.insertAfter(&pb, n12));
+
+    var it1 = s1.iterator(&pb);
+    try testing.expectEqual(n12, try expectExisting(it1.next()));
+    try testing.expectEqual(n13, try expectExisting(it1.next()));
+    try testing.expectEqual(n11, try expectExisting(it1.next()));
+    try testing.expectEqual(null, it1.next());
+    try testing.expectEqual(null, it1.next());
+
+    const n21: *Node = try expectExisting(s2.append(&pb));
+    const n22: *Node = try expectExisting(s2.append(&pb));
+    try testing.expect(s2.pop(&pb));
+    const n23: *Node = try expectExisting(s2.append(&pb));
+    try testing.expectEqual(n22, n23);
+
+    s2.flipDirection();
+    var it2 = s2.iterator(&pb);
+    try testing.expectEqual(n23, try expectExisting(it2.next()));
+    try testing.expectEqual(n21, try expectExisting(it2.next()));
+
+    const prev_count = pb.usedNodeCount();
+    _ = try expectExisting(s3.append(&pb));
+    pb.releaseSubpath(s3);
+    try testing.expectEqual(prev_count, pb.usedNodeCount());
+}
