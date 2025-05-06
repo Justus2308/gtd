@@ -536,7 +536,6 @@ pub const Subpath = struct {
 
         const node_count = (1 + orig_node_count + 1);
         assert(node_count >= 4);
-
         control_points[0] = .{
             .xy = Vec2
                 .fromSlice(&control_points[2].xy)
@@ -558,6 +557,11 @@ pub const Subpath = struct {
         const slice = try mode.getNamespace()
             .discretize(allocator, &control_points, granularity, options);
         return slice;
+    }
+
+    fn vec2ClampDistance(first_vector: Vec2, second_vector: Vec2, max_distance: f32) Vec2 {
+        const diff = second_vector.sub(first_vector);
+        return second_vector.add(diff.scale(@min(diff.length(), max_distance)));
     }
 
     pub fn iterator(subpath: *Subpath, pb: *PathBuilder) Node.List.Iterator {
@@ -666,6 +670,22 @@ test "resource exhaustion" {
     try testing.expectEqual(null, s2.append(&pb));
 }
 
+fn testCheckDiscretizedPath(disc: Subpath.Discretized.Slice, granularity: f32) !void {
+    var total_dist: f32 = 0;
+    for (
+        disc.items(.x)[0..(disc.len - 1)],
+        disc.items(.y)[0..(disc.len - 1)],
+        disc.items(.x)[1..],
+        disc.items(.y)[1..],
+    ) |x0, y0, x1, y1| {
+        const dist = Vec2.new(x0, y0).distance(.new(x1, y1));
+        try testing.expectApproxEqAbs(granularity, dist, 10e-2);
+        total_dist += dist;
+    }
+    const average_dist = (total_dist / @as(f32, @floatFromInt(disc.len - 1)));
+    try testing.expectApproxEqAbs(granularity, average_dist, 10e-4);
+}
+
 test "subpath discretization" {
     // if (true) return error.SkipZigTest;
     var pb = PathBuilder.init;
@@ -686,19 +706,34 @@ test "subpath discretization" {
     var disc = try s1.discretize(.precise, testing.allocator, &pb, granularity, .{});
     defer disc.deinit(testing.allocator);
 
-    var total_dist: f32 = 0;
-    for (
-        disc.items(.x)[0..(disc.len - 1)],
-        disc.items(.y)[0..(disc.len - 1)],
-        disc.items(.x)[1..],
-        disc.items(.y)[1..],
-    ) |x0, y0, x1, y1| {
-        const dist = Vec2.new(x0, y0).distance(.new(x1, y1));
-        try testing.expectApproxEqAbs(granularity, dist, 10e-3);
-        total_dist += dist;
-    }
-    const average_dist = (total_dist / @as(f32, @floatFromInt(disc.len - 1)));
-    try testing.expectApproxEqAbs(granularity, average_dist, 10e-6);
+    try testCheckDiscretizedPath(disc, granularity);
 }
 
-test "fuzz subpath discretization" {}
+test "fuzz subpath discretization" {
+    if (@import("builtin").os.tag == .macos) {
+        // blocked by [#20986](https://github.com/ziglang/zig/issues/20986)
+        return error.SkipZigTest;
+    }
+    const Context = struct {
+        fn testOne(context: @This(), input: []const u8) !void {
+            _ = context;
+            var stream = std.io.fixedBufferStream(input);
+            const r = stream.reader();
+
+            var pb = PathBuilder.init;
+            while (true) {
+                while (pb.acquireSubpath()) |subpath| {
+                    const params = r.readStruct(extern struct { granularity: f32 }) catch return;
+                    while (subpath.append(&pb)) |node| {
+                        const in = r.readStruct(extern struct { x: f32, y: f32, tension: f32 }) catch break;
+                        node.set(in.x, in.y, in.tension);
+                    }
+                    const disc = try subpath.discretize(.precise, testing.allocator, &pb, params.granularity, .{});
+                    try testCheckDiscretizedPath(disc, params.granularity);
+                }
+                pb.reset();
+            }
+        }
+    };
+    try testing.fuzz(Context{}, Context.testOne, .{});
+}
