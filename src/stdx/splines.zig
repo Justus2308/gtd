@@ -143,25 +143,53 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
                 const t_offset = (carry / len);
 
                 var t = t_offset;
-                var t_prev = (t - linear_t_step);
+                var t_prev = @max(0.0, (t - linear_t_step));
+                assert(t_prev <= t);
+
+                const low_t_margin = (0.5 * linear_t_step);
+                const high_t_margin = (2.0 * linear_t_step);
+                var t_margin = high_t_margin;
+
                 var required_len = carry;
-                while (true) : ({
+
+                while (t <= 1.0) : ({
                     // estimate next t based on previous t and total length of curve
                     const t_step = (0.5 * ((t - t_prev) + linear_t_step));
                     t_prev = t;
                     t += t_step;
+
+                    t_margin = if (t <= t_step or t >= (1.0 - t_step))
+                        high_t_margin
+                    else
+                        low_t_margin;
+
                     required_len += sample_dist;
                 }) {
-                    // Newton-Rhapson Method
-                    for (0..options.max_approx_steps) |_| {
-                        const nom = (required_len - lengthAt(
-                            .fromSlice(&control_points[i + 0].xy),
-                            .fromSlice(&control_points[i + 1].xy),
-                            .fromSlice(&control_points[i + 2].xy),
-                            .fromSlice(&control_points[i + 3].xy),
-                            t,
-                            control_points[i].tension,
-                        ));
+                    assert(t >= 0);
+                    assert(t_prev >= 0);
+
+                    // Newton bracketing method
+                    // http://benisrael.net/NB-BOOK-CH-4.pdf
+
+                    // f(x) = (required_len - len_at_t) => f(x) = 0 means we're done
+
+                    var t_lower_bound: F = @max(0.0, (t - t_margin)); // L
+                    var t_upper_bound: F = @min(1.0, (t + t_margin)); // U
+
+                    // f(x) from last iteration
+                    var nom: F = (required_len - lengthAt(
+                        .fromSlice(&control_points[i + 0].xy),
+                        .fromSlice(&control_points[i + 1].xy),
+                        .fromSlice(&control_points[i + 2].xy),
+                        .fromSlice(&control_points[i + 3].xy),
+                        t,
+                        control_points[i].tension,
+                    ));
+                    var approx_step_count: usize = 0;
+                    while ( // (t_upper_bound - t_lower_bound) >= options.eps and
+                    approx_step_count < options.max_approx_steps) : (approx_step_count += 1) {
+                        // Perform newton iteration to calculate new x+
+                        // Calculate f'(x)
                         const denom = -integrandLength(
                             t,
                             .fromSlice(&control_points[i + 0].xy),
@@ -170,23 +198,39 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
                             .fromSlice(&control_points[i + 3].xy),
                             control_points[i].tension,
                         );
+
+                        // Calculate f(x) / f'(x) and update t
                         const quot = (nom / denom);
                         if (@abs(quot) < options.eps) {
                             @branchHint(.unlikely);
                             break;
                         }
-                        t -= quot;
+                        var t_new = @max(0.0, (t - quot));
+                        if (t_new < t_lower_bound or t_new > t_upper_bound) {
+                            t_new = (0.5 * (t_lower_bound + t_upper_bound));
+                        }
+                        // Compare f(x+) and f(x) from last iteration, update bounds
+                        const nom_new = (required_len - lengthAt(
+                            .fromSlice(&control_points[i + 0].xy),
+                            .fromSlice(&control_points[i + 1].xy),
+                            .fromSlice(&control_points[i + 2].xy),
+                            .fromSlice(&control_points[i + 3].xy),
+                            t_new,
+                            control_points[i].tension,
+                        ));
+                        if (nom_new > 0) {
+                            t_lower_bound = t_new;
+                        } else {
+                            t_upper_bound = t_new;
+                        }
+                        nom = nom_new;
+                        t = t_new;
                     } else {
                         @branchHint(.cold);
                         log.debug(
                             "catmull_rom.discretize: newton method reached max approx steps! (seg:{d}, idx:{d})\n",
                             .{ i, samples.len },
                         );
-                    }
-
-                    if (t > 1.0) {
-                        @branchHint(.unlikely);
-                        break;
                     }
 
                     // std.debug.print("t={e}\n", .{ t });

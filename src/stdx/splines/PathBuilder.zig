@@ -476,11 +476,17 @@ pub const Subpath = struct {
 
     /// For per-frame calculations.
     pub fn discretizeFast(subpath: *Subpath, arena: Allocator, pb: *PathBuilder) Allocator.Error!Discretized.Slice {
-        return subpath.discretize(.fast, arena, pb, 0.1);
+        return subpath.discretize(.fast, arena, pb, 0.1, .{
+            .max_approx_steps = 50,
+            .eps = 10e-3,
+        });
     }
     /// For precise calculations.
     pub fn discretizePrecise(subpath: *Subpath, gpa: Allocator, pb: *PathBuilder) Allocator.Error!Discretized.Slice {
-        return subpath.discretize(.precise, gpa, pb, 0.01);
+        return subpath.discretize(.precise, gpa, pb, 0.01, .{
+            .max_approx_steps = 100,
+            .eps = 10e-6,
+        });
     }
 
     pub const DiscretizeMode = enum {
@@ -503,6 +509,7 @@ pub const Subpath = struct {
         allocator: Allocator,
         pb: *PathBuilder,
         granularity: f32,
+        options: mode.getNamespace().DiscretizeOptions,
     ) Allocator.Error!Discretized.Slice {
         const orig_node_count = subpath.count();
         if (orig_node_count < 2) {
@@ -549,7 +556,7 @@ pub const Subpath = struct {
         // Calculate discrete points
 
         const slice = try mode.getNamespace()
-            .discretize(allocator, control_points, granularity, .{});
+            .discretize(allocator, &control_points, granularity, options);
         return slice;
     }
 
@@ -639,6 +646,7 @@ test "resource exhaustion" {
 
     var it = pb.iterator();
     var s1: *Subpath = try expectExisting(it.next());
+    const s2: *Subpath = try expectExisting(it.next());
     pb.releaseSubpath(s1);
 
     s1 = try expectExisting(pb.acquireSubpath());
@@ -652,7 +660,45 @@ test "resource exhaustion" {
     try testing.expectEqual(0, pb.unusedNodeCount());
 
     try testing.expect(s1.pop(&pb));
+    try testing.expectEqual(1, pb.unusedNodeCount());
 
-    _ = try expectExisting(s1.append(&pb));
-    try testing.expectEqual(null, s1.append(&pb));
+    _ = try expectExisting(s2.append(&pb));
+    try testing.expectEqual(null, s2.append(&pb));
 }
+
+test "subpath discretization" {
+    // if (true) return error.SkipZigTest;
+    var pb = PathBuilder.init;
+
+    const s1: *Subpath = try expectExisting(pb.acquireSubpath());
+
+    const n1: *Node = try expectExisting(s1.append(&pb));
+    const n2: *Node = try expectExisting(s1.append(&pb));
+    const n3: *Node = try expectExisting(s1.append(&pb));
+
+    n1.set(1, 1, 0.7);
+    n2.set(3, 5, 0.2);
+    n3.set(5, 4, 0.4);
+
+    try testing.expectEqual(3, s1.count());
+
+    const granularity = 0.1;
+    var disc = try s1.discretize(.precise, testing.allocator, &pb, granularity, .{});
+    defer disc.deinit(testing.allocator);
+
+    var total_dist: f32 = 0;
+    for (
+        disc.items(.x)[0..(disc.len - 1)],
+        disc.items(.y)[0..(disc.len - 1)],
+        disc.items(.x)[1..],
+        disc.items(.y)[1..],
+    ) |x0, y0, x1, y1| {
+        const dist = Vec2.new(x0, y0).distance(.new(x1, y1));
+        try testing.expectApproxEqAbs(granularity, dist, 10e-3);
+        total_dist += dist;
+    }
+    const average_dist = (total_dist / @as(f32, @floatFromInt(disc.len - 1)));
+    try testing.expectApproxEqAbs(granularity, average_dist, 10e-6);
+}
+
+test "fuzz subpath discretization" {}
