@@ -75,6 +75,13 @@ fn releaseNode(pb: *PathBuilder, node: *Node) void {
     assert(pb.unused_node_count <= max_node_count);
 }
 
+pub fn usedSubpathCount(pb: PathBuilder) usize {
+    return (max_subpath_count - pb.unusedSubpathCount());
+}
+pub fn unusedSubpathCount(pb: PathBuilder) usize {
+    return pb.subpath_avail_set.count();
+}
+
 pub fn usedNodeCount(pb: PathBuilder) usize {
     return (max_node_count - pb.unusedNodeCount());
 }
@@ -129,7 +136,7 @@ pub const Node = struct {
     }
 
     pub const Index = enum(u16) {
-        none = std.math.maxInt(u16),
+        none = math.maxInt(u16),
         _,
 
         pub inline fn from(val: u16) Node.Index {
@@ -163,7 +170,7 @@ pub const Node = struct {
             return @enumFromInt(@as(u16, @intCast(@divExact(offset, @sizeOf(Node)))));
         }
         comptime {
-            assert(std.math.isPowerOfTwo(@sizeOf(Node)));
+            assert(math.isPowerOfTwo(@sizeOf(Node)));
         }
     };
 
@@ -517,7 +524,14 @@ pub const Subpath = struct {
             @branchHint(.unlikely);
             return .empty;
         }
-        return discretizeFromControlPoints(mode, allocator, control_points, granularity, options);
+        const disc = try discretizeFromControlPoints(mode, allocator, control_points, granularity, options);
+        assert(disc.len != 0);
+        if (builtin.mode == .Debug) {
+            for (disc.items(.x)) |x| assert(math.isFinite(x));
+            for (disc.items(.y)) |y| assert(math.isFinite(y));
+            for (disc.items(.t)) |t| assert(math.isFinite(t));
+        }
+        return disc;
     }
 
     fn nodesToContolPoints(
@@ -591,10 +605,12 @@ pub const Subpath = struct {
     }
 };
 
+const builtin = @import("builtin");
 const std = @import("std");
 const stdx = @import("stdx");
 const zalgebra = @import("zalgebra");
 
+const math = std.math;
 const mem = std.mem;
 const testing = std.testing;
 
@@ -612,13 +628,19 @@ fn expectExisting(optional: anytype) !@typeInfo(@TypeOf(optional)).optional.chil
 test "basic usage" {
     var pb = PathBuilder.init;
 
+    // acquire subpaths
+
     const s1: *Subpath = try expectExisting(pb.acquireSubpath());
     const s2: *Subpath = try expectExisting(pb.acquireSubpath());
     const s3: *Subpath = try expectExisting(pb.acquireSubpath());
 
+    // check for uniqueness
+
     try testing.expect(s1 != s2);
     try testing.expect(s2 != s3);
     try testing.expect(s3 != s1);
+
+    // iterate existing subpaths
 
     var sub_it = pb.iterator();
     try testing.expectEqual(s1, try expectExisting(sub_it.peek()));
@@ -628,13 +650,19 @@ test "basic usage" {
     try testing.expectEqual(null, sub_it.next());
     try testing.expectEqual(null, sub_it.next());
 
+    // insert nodes into subpath
+
     const n11: *Node = try expectExisting(s1.append(&pb));
     const n12: *Node = try expectExisting(s1.prepend(&pb));
     const n13: *Node = try expectExisting(s1.insertAfter(&pb, n12));
 
+    // check for uniqueness
+
     try testing.expect(n11 != n12);
     try testing.expect(n12 != n13);
     try testing.expect(n13 != n11);
+
+    // iterate subpath nodes
 
     var it1 = s1.iterator(&pb);
     try testing.expectEqual(n12, try expectExisting(it1.peek()));
@@ -644,11 +672,15 @@ test "basic usage" {
     try testing.expectEqual(null, it1.next());
     try testing.expectEqual(null, it1.next());
 
+    // reuse removed nodes
+
     const n21: *Node = try expectExisting(s2.append(&pb));
     const n22: *Node = try expectExisting(s2.append(&pb));
     try testing.expect(s2.pop(&pb));
     const n23: *Node = try expectExisting(s2.append(&pb));
     try testing.expectEqual(n22, n23);
+
+    // iterate subpath nodes with flipped direction
 
     s2.flipDirection();
     var it2 = s2.iterator(&pb);
@@ -656,19 +688,59 @@ test "basic usage" {
     try testing.expectEqual(n21, try expectExisting(it2.next()));
     try testing.expectEqual(null, it2.next());
 
+    // clear all nodes in subpath on release
+
     const prev_count = pb.usedNodeCount();
     _ = try expectExisting(s3.append(&pb));
     pb.releaseSubpath(s3);
     try testing.expectEqual(prev_count, pb.usedNodeCount());
 }
 
+test "acquire/release subpaths/nodes" {
+    var pb = PathBuilder.init;
+
+    // acquire
+
+    var subpaths: [max_subpath_count]*Subpath = undefined;
+    for (&subpaths) |*subpath| {
+        subpath.* = try expectExisting(pb.acquireSubpath());
+    }
+    try testing.expectEqual(null, pb.acquireSubpath());
+    try testing.expectEqual(0, pb.unusedSubpathCount());
+
+    var nodes: [max_node_count]*Node = undefined;
+    for (&nodes) |*node| {
+        node.* = try expectExisting(pb.acquireNode());
+    }
+    try testing.expectEqual(null, pb.acquireNode());
+    try testing.expectEqual(0, pb.unusedNodeCount());
+
+    // release
+
+    for (subpaths) |subpath| {
+        pb.releaseSubpath(subpath);
+    }
+    try testing.expectEqual(0, pb.usedSubpathCount());
+    try testing.expect(pb.acquireSubpath() != null);
+
+    for (nodes) |node| {
+        pb.releaseNode(node);
+    }
+    try testing.expectEqual(0, pb.usedNodeCount());
+    try testing.expect(pb.acquireNode() != null);
+}
+
 test "resource exhaustion" {
     var pb = PathBuilder.init;
+
+    // exahaust subpath pool
 
     for (0..max_subpath_count) |_| {
         _ = pb.acquireSubpath();
     }
     try testing.expectEqual(null, pb.acquireSubpath());
+
+    // check subpath reuse
 
     var it = pb.iterator();
     var s1: *Subpath = try expectExisting(it.next());
@@ -678,12 +750,16 @@ test "resource exhaustion" {
     s1 = try expectExisting(pb.acquireSubpath());
     try testing.expectEqual(null, pb.acquireSubpath());
 
+    // exhaust node pool
+
     for (0..max_node_count) |_| {
         _ = s1.append(&pb);
     }
     try testing.expectEqual(null, s1.append(&pb));
     try testing.expectEqual(max_node_count, s1.count());
     try testing.expectEqual(0, pb.unusedNodeCount());
+
+    // check node reuse
 
     try testing.expect(s1.pop(&pb));
     try testing.expectEqual(1, pb.unusedNodeCount());
@@ -702,6 +778,8 @@ test "node removal" {
     const n13: *Node = try expectExisting(s1.append(&pb));
     const n14: *Node = try expectExisting(s1.append(&pb));
 
+    // check different removal methods
+
     s1.remove(&pb, n12);
     try testing.expect(!s1.contains(&pb, n12));
 
@@ -718,6 +796,9 @@ test "node removal" {
 }
 
 fn testCheckDiscretizedPath(disc: Subpath.Discretized.Slice, granularity: f32) !void {
+    try testing.expect(math.isFinite(disc.items(.x)[0]));
+    try testing.expect(math.isFinite(disc.items(.y)[0]));
+
     var total_dist: f32 = 0;
     for (
         disc.items(.x)[0..(disc.len - 1)],
@@ -725,6 +806,9 @@ fn testCheckDiscretizedPath(disc: Subpath.Discretized.Slice, granularity: f32) !
         disc.items(.x)[1..],
         disc.items(.y)[1..],
     ) |x0, y0, x1, y1| {
+        try testing.expect(math.isFinite(x1));
+        try testing.expect(math.isFinite(y1));
+
         const dist = Vec2.new(x0, y0).distance(.new(x1, y1));
         try testing.expectApproxEqAbs(granularity, dist, 10e-2);
         total_dist += dist;
@@ -749,6 +833,8 @@ test "subpath discretization" {
 
     try testing.expectEqual(3, s1.count());
 
+    // check accuracy of discrete points
+
     const granularity = 0.1;
     var disc = try s1.discretize(.precise, testing.allocator, &pb, granularity, .{});
     defer disc.deinit(testing.allocator);
@@ -757,7 +843,7 @@ test "subpath discretization" {
 }
 
 test "fuzz subpath discretization" {
-    if (@import("builtin").os.tag == .macos) {
+    if (builtin.os.tag == .macos) {
         // blocked by [#20986](https://github.com/ziglang/zig/issues/20986)
         return error.SkipZigTest;
     }
@@ -801,7 +887,7 @@ test "fuzz subpath discretization" {
             const control_points = subpath.nodesToContolPoints(disc_mode, pb, &control_point_buffer);
             const subpath_len = disc_mode.getNamespace().totalLength(control_points);
 
-            const granularity = (rand.floatNorm(f32) * subpath_len + std.math.floatEpsAt(f32, 0.0));
+            const granularity = ((rand.floatNorm(f32) * subpath_len) + math.floatEpsAt(f32, 0.0));
             const disc = try Subpath.discretizeFromControlPoints(.precise, testing.allocator, control_points, granularity, .{});
             defer disc.deinit(testing.allocator);
 
