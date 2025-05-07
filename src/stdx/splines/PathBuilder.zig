@@ -778,7 +778,7 @@ test "node removal" {
     const n13: *Node = try expectExisting(s1.append(&pb));
     const n14: *Node = try expectExisting(s1.append(&pb));
 
-    // check different removal methods
+    // test different removal methods
 
     s1.remove(&pb, n12);
     try testing.expect(!s1.contains(&pb, n12));

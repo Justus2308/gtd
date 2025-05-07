@@ -281,12 +281,13 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
                 var max: F = 0.0;
                 var max_idx: usize = 0;
                 for (
-                    discretized.items(.x)[0 .. discretized.len - 1],
-                    discretized.items(.y)[0 .. discretized.len - 1],
+                    discretized.items(.x)[0..(discretized.len - 1)],
+                    discretized.items(.y)[0..(discretized.len - 1)],
                     discretized.items(.x)[1..],
                     discretized.items(.y)[1..],
+                    discretized.items(.t)[0..(discretized.len - 1)],
                     0..,
-                ) |disc_x, disc_y, next_x, next_y, i| {
+                ) |disc_x, disc_y, next_x, next_y, t, i| {
                     const dist = Vec2.new(disc_x, disc_y).distance(.new(next_x, next_y));
                     const diff = (dist - sample_dist);
                     sum += diff;
@@ -297,8 +298,11 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
                         max_idx = i;
                     }
 
-                    std.debug.print("{d}: {d} ({d})\n", .{ i, dist, diff });
+                    const diff_sign_char: u8 = if (diff < 0) '-' else '+';
+                    std.debug.print("{d:3}: t={d:1.10} d={d:2.10} ({c}{d:.15})\n", .{ i, t, dist, diff_sign_char, abs_diff });
                 }
+                const last_idx = (discretized.len - 1);
+                std.debug.print("{d:3}: t={d:1.10}\n", .{ last_idx, discretized.items(.t)[last_idx] });
                 break :blk .{ sum, sum_abs, max, max_idx };
             };
             const average_error = (cumulative_error_abs / @as(F, @floatFromInt(discretized.len)));
