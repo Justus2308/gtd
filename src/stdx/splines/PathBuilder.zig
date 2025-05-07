@@ -511,18 +511,30 @@ pub const Subpath = struct {
         granularity: f32,
         options: mode.getNamespace().DiscretizeOptions,
     ) Allocator.Error!Discretized.Slice {
+        var control_point_buffer: [1 + max_node_count + 1]mode.getNamespace().ControlPoint = undefined;
+        const control_points = subpath.nodesToContolPoints(mode, pb, &control_point_buffer);
+        if (control_points.len == 0) {
+            @branchHint(.unlikely);
+            return .empty;
+        }
+        return discretizeFromControlPoints(mode, allocator, control_points, granularity, options);
+    }
+
+    fn nodesToContolPoints(
+        subpath: *Subpath,
+        comptime mode: DiscretizeMode,
+        pb: *PathBuilder,
+        dest: *[1 + max_node_count + 1]mode.getNamespace().ControlPoint,
+    ) []const mode.getNamespace().ControlPoint {
         const orig_node_count = subpath.count();
         if (orig_node_count < 2) {
-            return .empty;
+            return &.{};
         }
 
         // Transform linked list of nodes into a more useful data layout
 
-        const ControlPoint = mode.getNamespace().ControlPoint;
-        var control_points: [1 + max_node_count + 1]ControlPoint = undefined;
-
         var it = subpath.iterator(pb);
-        for (control_points[1..][0..orig_node_count]) |*control_point| {
+        for (dest[1..][0..orig_node_count]) |*control_point| {
             const node = it.next().?;
             control_point.* = .{
                 .xy = .{ node.x, node.y },
@@ -536,26 +548,36 @@ pub const Subpath = struct {
 
         const node_count = (1 + orig_node_count + 1);
         assert(node_count >= 4);
-        control_points[0] = .{
+        dest[0] = .{
             .xy = Vec2
-                .fromSlice(&control_points[2].xy)
-                .lerp(.fromSlice(&control_points[1].xy), 2.0)
+                .fromSlice(&dest[2].xy)
+                .lerp(.fromSlice(&dest[1].xy), 2.0)
                 .toArray(),
             .tension = 0.0,
         };
 
-        control_points[node_count - 1] = .{
+        dest[node_count - 1] = .{
             .xy = Vec2
-                .fromSlice(&control_points[node_count - 3].xy)
-                .lerp(.fromSlice(&control_points[node_count - 2].xy), 2.0)
+                .fromSlice(&dest[node_count - 3].xy)
+                .lerp(.fromSlice(&dest[node_count - 2].xy), 2.0)
                 .toArray(),
             .tension = 0.0,
         };
 
-        // Calculate discrete points
+        return dest[0..node_count];
+    }
 
+    fn discretizeFromControlPoints(
+        comptime mode: DiscretizeMode,
+        allocator: Allocator,
+        control_points: []const mode.getNamespace().ControlPoint,
+        granularity: f32,
+        options: mode.getNamespace().DiscretizeOptions,
+    ) Allocator.Error!Discretized.Slice {
+        assert(control_points.len >= 4);
+        assert(granularity > 0.0);
         const slice = try mode.getNamespace()
-            .discretize(allocator, &control_points, granularity, options);
+            .discretize(allocator, control_points, granularity, options);
         return slice;
     }
 
@@ -765,7 +787,8 @@ test "fuzz subpath discretization" {
                 break :init .{ sp, node };
             };
 
-            const node_count = rand.uintLessThan(u8, (max_node_count - 1));
+            // We need at least two nodes
+            const node_count = rand.intRangeLessThan(u8, 1, (max_node_count - 1));
             for (0..node_count) |_| {
                 const insert_kind = rand.enumValue(Subpath.InsertKind);
                 node = switch (insert_kind) {
@@ -773,10 +796,13 @@ test "fuzz subpath discretization" {
                 };
             }
 
-            // TODO make dist dependant on actual path length?
-            const float_dist: f32 = @floatFromInt(rand.uintLessThan(u32, 100));
-            const granularity = (rand.floatNorm(f32) * float_dist);
-            const disc = try subpath.discretize(.precise, testing.allocator, pb, granularity, .{});
+            const disc_mode = Subpath.DiscretizeMode.precise;
+            var control_point_buffer: [1 + max_node_count + 1]disc_mode.getNamespace().ControlPoint = undefined;
+            const control_points = subpath.nodesToContolPoints(disc_mode, pb, &control_point_buffer);
+            const subpath_len = disc_mode.getNamespace().totalLength(control_points);
+
+            const granularity = (rand.floatNorm(f32) * subpath_len + std.math.floatEpsAt(f32, 0.0));
+            const disc = try Subpath.discretizeFromControlPoints(.precise, testing.allocator, control_points, granularity, .{});
             defer disc.deinit(testing.allocator);
 
             try testCheckDiscretizedPath(disc, granularity);

@@ -83,9 +83,7 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
             return dt_norm;
         }
 
-        pub fn estimateDiscretePointCount(control_points: []const ControlPoint, sample_dist: F) usize {
-            assert(sample_dist > 0.0);
-
+        pub fn totalLength(control_points: []const ControlPoint) F {
             var total_len: F = 0.0;
             for (0..(control_points.len -| 3)) |i| {
                 const len = length(
@@ -97,6 +95,12 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
                 );
                 total_len += len;
             }
+            return total_len;
+        }
+
+        pub fn estimateDiscretePointCount(control_points: []const ControlPoint, sample_dist: F) usize {
+            assert(sample_dist > 0.0);
+            const total_len = totalLength(control_points);
             const point_count_fp = (total_len / sample_dist);
             return @intFromFloat(@ceil(point_count_fp));
         }
