@@ -21,7 +21,7 @@ Code speaks for itself
 ## Installation
 
 ### Requirements:
-- [Zig 0.14.0](https://ziglang.org/download)
+- [Latest Zig master](https://ziglang.org/download)
 - libc*
 
 \*for targets that are not on [this list](https://ziglang.org/learn/overview/#zig-ships-with-libc)

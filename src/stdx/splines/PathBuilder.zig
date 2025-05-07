@@ -419,7 +419,7 @@ pub const Subpath = struct {
     }
 
     pub fn remove(subpath: *Subpath, pb: *PathBuilder, node: *Node) void {
-        assert(subpath.contains(node));
+        assert(subpath.contains(pb, node));
         subpath.nodes.remove(&pb.node_storage, node);
         subpath.len -= 1;
         pb.releaseNode(node);
@@ -670,6 +670,31 @@ test "resource exhaustion" {
     try testing.expectEqual(null, s2.append(&pb));
 }
 
+test "node removal" {
+    var pb = PathBuilder.init;
+
+    var s1: *Subpath = try expectExisting(pb.acquireSubpath());
+
+    const n11: *Node = try expectExisting(s1.append(&pb));
+    const n12: *Node = try expectExisting(s1.append(&pb));
+    const n13: *Node = try expectExisting(s1.append(&pb));
+    const n14: *Node = try expectExisting(s1.append(&pb));
+
+    s1.remove(&pb, n12);
+    try testing.expect(!s1.contains(&pb, n12));
+
+    try testing.expect(s1.popFirst(&pb));
+    try testing.expect(!s1.contains(&pb, n11));
+
+    try testing.expect(s1.pop(&pb));
+    try testing.expect(!s1.contains(&pb, n14));
+
+    try testing.expectEqual(1, s1.count());
+    var it = s1.iterator(&pb);
+    try testing.expectEqual(n13, try expectExisting(it.next()));
+    try testing.expectEqual(null, it.peek());
+}
+
 fn testCheckDiscretizedPath(disc: Subpath.Discretized.Slice, granularity: f32) !void {
     var total_dist: f32 = 0;
     for (
@@ -715,25 +740,47 @@ test "fuzz subpath discretization" {
         return error.SkipZigTest;
     }
     const Context = struct {
-        fn testOne(context: @This(), input: []const u8) !void {
-            _ = context;
-            var stream = std.io.fixedBufferStream(input);
-            const r = stream.reader();
+        pb: PathBuilder,
 
-            var pb = PathBuilder.init;
-            while (true) {
-                while (pb.acquireSubpath()) |subpath| {
-                    const params = r.readStruct(extern struct { granularity: f32 }) catch return;
-                    while (subpath.append(&pb)) |node| {
-                        const in = r.readStruct(extern struct { x: f32, y: f32, tension: f32 }) catch break;
-                        node.set(in.x, in.y, in.tension);
-                    }
-                    const disc = try subpath.discretize(.precise, testing.allocator, &pb, params.granularity, .{});
-                    try testCheckDiscretizedPath(disc, params.granularity);
-                }
-                pb.reset();
+        fn testOne(context: @This(), input: []const u8) !void {
+            var in_stream = std.io.fixedBufferStream(input);
+            const in = in_stream.reader();
+            const prng_seed = in.readInt(u64, .little) orelse return;
+            var prng = std.Random.DefaultPrng.init(prng_seed);
+            const rand = prng.random();
+
+            const pb = &context.pb;
+
+            const subpath, var node = init: {
+                const sp = pb.acquireSubpath() orelse blk: {
+                    pb.reset();
+                    break :blk try expectExisting(pb.acquireSubpath());
+                };
+                const node = sp.append(pb) orelse {
+                    pb.reset();
+                    const new_sp = try expectExisting(pb.acquireSubpath());
+                    const new_node = try expectExisting(new_sp.append(pb));
+                    break :init .{ new_sp, new_node };
+                };
+                break :init .{ sp, node };
+            };
+
+            const node_count = rand.uintLessThan(u8, (max_node_count - 1));
+            for (0..node_count) |_| {
+                const insert_kind = rand.enumValue(Subpath.InsertKind);
+                node = switch (insert_kind) {
+                    inline else => |kind| subpath.innerInsert(kind, pb, node) orelse break,
+                };
             }
+
+            // TODO make dist dependant on actual path length?
+            const float_dist: f32 = @floatFromInt(rand.uintLessThan(u32, 100));
+            const granularity = (rand.floatNorm(f32) * float_dist);
+            const disc = try subpath.discretize(.precise, testing.allocator, pb, granularity, .{});
+            defer disc.deinit(testing.allocator);
+
+            try testCheckDiscretizedPath(disc, granularity);
         }
     };
-    try testing.fuzz(Context{}, Context.testOne, .{});
+    try testing.fuzz(Context{ .pb = .init }, Context.testOne, .{});
 }
