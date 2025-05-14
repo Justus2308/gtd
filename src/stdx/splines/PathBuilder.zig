@@ -527,8 +527,7 @@ pub const Subpath = struct {
         const disc = try discretizeFromControlPoints(mode, allocator, control_points, granularity, options);
         assert(disc.len != 0);
         if (builtin.mode == .Debug) {
-            for (disc.items(.x)) |x| assert(math.isFinite(x));
-            for (disc.items(.y)) |y| assert(math.isFinite(y));
+            for (disc.items(.coords)) |coords| assert(math.isFinite(coords.x) and math.isFinite(coords.y));
             for (disc.items(.t)) |t| assert(math.isFinite(t));
         }
         return disc;
@@ -796,20 +795,18 @@ test "node removal" {
 }
 
 fn testCheckDiscretizedPath(disc: Subpath.Discretized.Slice, granularity: f32) !void {
-    try testing.expect(math.isFinite(disc.items(.x)[0]));
-    try testing.expect(math.isFinite(disc.items(.y)[0]));
+    try testing.expect(math.isFinite(disc.items(.coords)[0].x));
+    try testing.expect(math.isFinite(disc.items(.coords)[0].y));
 
     var total_dist: f32 = 0;
     for (
-        disc.items(.x)[0..(disc.len - 1)],
-        disc.items(.y)[0..(disc.len - 1)],
-        disc.items(.x)[1..],
-        disc.items(.y)[1..],
-    ) |x0, y0, x1, y1| {
-        try testing.expect(math.isFinite(x1));
-        try testing.expect(math.isFinite(y1));
+        disc.items(.coords)[0..(disc.len - 1)],
+        disc.items(.coords)[1..],
+    ) |c0, c1| {
+        try testing.expect(math.isFinite(c1.x));
+        try testing.expect(math.isFinite(c1.y));
 
-        const dist = Vec2.new(x0, y0).distance(.new(x1, y1));
+        const dist = c0.asVec().distance(c1.asVec());
         try testing.expectApproxEqAbs(granularity, dist, 10e-2);
         total_dist += dist;
     }

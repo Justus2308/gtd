@@ -19,7 +19,27 @@ pub fn Integrator(comptime F: type) type {
     };
 }
 
-pub const CatmullRomDiscretized = std.MultiArrayList(struct { x: f32, y: f32, t: f32 });
+pub const Point = struct {
+    coords: Coords,
+    t: f32,
+
+    pub const Coords = extern struct {
+        _: void align(8) = {},
+        x: f32,
+        y: f32,
+
+        pub inline fn asVec(coords: Coords) zalgebra.Vec2 {
+            return .new(coords.x, coords.y);
+        }
+
+        comptime {
+            assert(@alignOf(Coords) == 8);
+            assert(@sizeOf(Coords) == 8);
+        }
+    };
+};
+
+pub const CatmullRomDiscretized = std.MultiArrayList(Point);
 
 /// Uniform Catmull-Rom-Splines with variable tension (𝜏)
 pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
@@ -226,8 +246,10 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
                         control_points[i].tension,
                     );
                     try samples.append(gpa, .{
-                        .x = @floatCast(p.x()),
-                        .y = @floatCast(p.y()),
+                        .coords = .{
+                            .x = @floatCast(p.x()),
+                            .y = @floatCast(p.y()),
+                        },
                         .t = @floatCast(t),
                     });
                 }
@@ -281,14 +303,12 @@ pub fn catmull_rom(comptime F: type, comptime integrator: Integrator(F)) type {
                 var max: F = 0.0;
                 var max_idx: usize = 0;
                 for (
-                    discretized.items(.x)[0..(discretized.len - 1)],
-                    discretized.items(.y)[0..(discretized.len - 1)],
-                    discretized.items(.x)[1..],
-                    discretized.items(.y)[1..],
+                    discretized.items(.coords)[0..(discretized.len - 1)],
+                    discretized.items(.coords)[1..],
                     discretized.items(.t)[0..(discretized.len - 1)],
                     0..,
-                ) |disc_x, disc_y, next_x, next_y, t, i| {
-                    const dist = Vec2.new(disc_x, disc_y).distance(.new(next_x, next_y));
+                ) |disc, next, t, i| {
+                    const dist = disc.asVec().distance(next.asVec());
                     const diff = (dist - sample_dist);
                     sum += diff;
                     const abs_diff = @abs(diff);

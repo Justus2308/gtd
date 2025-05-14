@@ -1,7 +1,7 @@
 .{
     .name = .gtd,
     .version = "0.0.0",
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.15.0-dev.386+2e35fdd03",
     .fingerprint = 0xb3551d049a7d1315,
 
     .dependencies = .{
@@ -27,8 +27,8 @@
             .hash = "zalgebra-0.0.0-aaiVSk5nAQA4CIV_flm1iIpWiSrVcxggA9y_aaa-TtdR",
         },
         .domath = .{
-            .url = "https://github.com/Justus2308/domath/archive/36d8223279177c3267d4e75a6cff4d7227c9f835.tar.gz",
-            .hash = "domath-0.0.0-ncT8GnRlAAAIYU7ENMPu30XZbkdGNjCjYPDWm5qcReAR",
+            .url = "https://github.com/Justus2308/domath/archive/882fa82cc3eb0202dab126d4bef077b9ff227704.tar.gz",
+            .hash = "domath-0.0.0-ncT8Gi_NAABy48_twV6bE9GFz0of2NkR5gL198BPCfmb",
         },
 
         // Tooling
