@@ -27,8 +27,8 @@
             .hash = "zalgebra-0.0.0-aaiVSk5nAQA4CIV_flm1iIpWiSrVcxggA9y_aaa-TtdR",
         },
         .domath = .{
-            .url = "https://github.com/Justus2308/domath/archive/882fa82cc3eb0202dab126d4bef077b9ff227704.tar.gz",
-            .hash = "domath-0.0.0-ncT8Gi_NAABy48_twV6bE9GFz0of2NkR5gL198BPCfmb",
+            .url = "https://github.com/Justus2308/domath/archive/0530304759a98675b23704be5b9378fbee7a7bfb.tar.gz",
+            .hash = "domath-0.0.0-ncT8Gi0NAQDESqgYh2MQbIjNZQhhzygMDSUuHdzD0t2z",
         },
 
         // Tooling

@@ -21,7 +21,8 @@ const log = std.log.scoped(.assets);
 const is_debug = (builtin.mode == .Debug);
 const is_safe_build = (builtin.mode == .Debug or builtin.mode == .ReleaseSafe);
 
-pub const Manager = @import("asset/Manager.zig");
+pub const Manager = @import("resource/Manager.zig");
+pub const Descriptor = @import("resource/Descriptor.zig");
 
 // Prevent accidental key collisions
 const Magic = enum(u32) {
@@ -96,12 +97,6 @@ pub const Texture = struct {
         texture.* = undefined;
 
         log.info("unloaded texture from '{s}'", .{noMagic(context.bytes)});
-    }
-
-    pub fn toOwnedBytes(allocator: Allocator, key: Key) Allocator.Error![]const u8 {
-        const magic_bytes = Magic.path.asBytes();
-        const bytes = try mem.concat(allocator, u8, &.{ &magic_bytes, key });
-        return bytes;
     }
 };
 

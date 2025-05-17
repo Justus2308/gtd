@@ -276,9 +276,9 @@ pub fn build(b: *std.Build) void {
     shader_mod.addImport("sokol", sokol_mod);
 
     const internal_imports = [_]std.Build.Module.Import{
-        createImport(b, "asset", optimize, target),
         createImport(b, "game", optimize, target),
         createImport(b, "render", optimize, target),
+        createImport(b, "resource", optimize, target),
         createImport(b, "stdx", optimize, target),
     };
     const external_imports = [_]std.Build.Module.Import{

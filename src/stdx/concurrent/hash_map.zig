@@ -4,8 +4,8 @@ const assert = std.debug.assert;
 
 pub const default_bucket_count = 4;
 
-pub fn ConcurrentStringHashMapUnmanaged(comptime V: type) type {
-    return ConcurrentHashMapUnmanaged(
+pub fn StringHashMapUnmanaged(comptime V: type) type {
+    return HashMapUnmanaged(
         []const u8,
         V,
         std.hash_map.StringContext,
@@ -14,11 +14,11 @@ pub fn ConcurrentStringHashMapUnmanaged(comptime V: type) type {
     );
 }
 
-pub fn ConcurrentAutoHashMapUnmanaged(
+pub fn AutoHashMapUnmanaged(
     comptime K: type,
     comptime V: type,
 ) type {
-    return ConcurrentHashMapUnmanaged(
+    return HashMapUnmanaged(
         K,
         V,
         std.hash_map.AutoContext(K),
@@ -27,7 +27,7 @@ pub fn ConcurrentAutoHashMapUnmanaged(
     );
 }
 
-pub fn ConcurrentHashMapUnmanaged(
+pub fn HashMapUnmanaged(
     comptime K: type,
     comptime V: type,
     comptime Context: type,
@@ -74,6 +74,16 @@ pub fn ConcurrentHashMapUnmanaged(
         ) Allocator.Error!*V {
             const hashed = hash(key);
             return self.getBucket(hashed).putAndGetPtr(allocator, key, value, hashed);
+        }
+
+        pub fn getPtrOrPutAndGetPtr(
+            self: *Self,
+            allocator: Allocator,
+            key: K,
+            value: V,
+        ) Allocator.Error!*V {
+            const hashed = hash(key);
+            return self.getBucket(hashed).getPtrOrPutAndGetPtr(allocator, key, value, hashed);
         }
 
         pub fn contains(self: *Self, key: K) bool {
@@ -173,6 +183,22 @@ pub fn ConcurrentHashMapUnmanaged(
                 return gop.value_ptr;
             }
 
+            pub fn getPtrOrPutAndGetPtr(
+                bucket: *Bucket,
+                allocator: Allocator,
+                key: K,
+                value: V,
+                hashed: u64,
+            ) Allocator.Error!*V {
+                bucket.lock.lock();
+                defer bucket.lock.unlock();
+                const gop = try bucket.getOrPutInner(allocator, key, hashed);
+                if (gop.found_existing == false) {
+                    gop.value_ptr.* = value;
+                }
+                return gop.value_ptr;
+            }
+
             inline fn getOrPutInner(
                 bucket: *Bucket,
                 allocator: Allocator,
@@ -196,8 +222,8 @@ pub fn ConcurrentHashMapUnmanaged(
     };
 }
 
-pub fn ConcurrentStringArrayHashMapUnmanaged(comptime V: type) type {
-    return ConcurrentArrayHashMapUnmanaged(
+pub fn StringArrayHashMapUnmanaged(comptime V: type) type {
+    return ArrayHashMapUnmanaged(
         []const u8,
         V,
         std.array_hash_map.StringContext,
@@ -206,11 +232,11 @@ pub fn ConcurrentStringArrayHashMapUnmanaged(comptime V: type) type {
     );
 }
 
-pub fn ConcurrentAutoArrayHashMapUnmanaged(
+pub fn AutoArrayHashMapUnmanaged(
     comptime K: type,
     comptime V: type,
 ) type {
-    return ConcurrentHashMapUnmanaged(
+    return HashMapUnmanaged(
         K,
         V,
         std.array_hash_map.AutoContext(K),
@@ -219,7 +245,7 @@ pub fn ConcurrentAutoArrayHashMapUnmanaged(
     );
 }
 
-pub fn ConcurrentArrayHashMapUnmanaged(
+pub fn ArrayHashMapUnmanaged(
     comptime K: type,
     comptime V: type,
     comptime Context: type,

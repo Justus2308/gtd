@@ -25,6 +25,7 @@ pub const Config = struct {
     /// Used mainly for testing purposes.
     backing_allocator: Allocator = std.heap.page_allocator,
 };
+
 /// Allocates power-of-two-sized chunks of memory, backed by OS pages.
 /// Like a buddy allocator, but with fixed-size allocations and without
 /// the fragmentation.
@@ -176,11 +177,14 @@ pub fn ChunkAllocator(comptime config: Config) type {
             const alloc_addr = alloc_align.backward(chunk_addr);
             const chunk_index = ((chunk_addr - alloc_addr) >> chunk_size_shift);
             assert(chunk_index < chunks_per_alloc);
+
             const gop = self.allocations.getOrPutAssumeCapacity(alloc_addr);
             assert(gop.found_existing == true);
+
             const free_set = gop.value_ptr;
             assert(free_set.isSet(chunk_index) == false);
             free_set.set(chunk_index);
+
             const avail_idx = gop.index;
             if (is_shrinkable == true and free_set.count() == chunks_per_alloc) {
                 self.allocations.swapRemoveAt(avail_idx);
@@ -211,12 +215,12 @@ pub fn ChunkAllocator(comptime config: Config) type {
         }
 
         fn createAllocation() Allocator.Error!usize {
-            const raw = try config.backing_allocator.alignedAlloc(u8, alloc_align, alloc_size);
-            return @intFromPtr(raw.ptr);
+            const raw = config.backing_allocator.rawAlloc(alloc_size, alloc_align, @returnAddress()) orelse return Allocator.Error.OutOfMemory;
+            return @intFromPtr(raw);
         }
         fn destroyAllocation(alloc_addr: usize) void {
-            const raw = @as([*]align(alloc_align.toByteUnits()) u8, @ptrFromInt(alloc_addr))[0..alloc_size];
-            config.backing_allocator.free(raw);
+            const raw = @as([*]u8, @ptrFromInt(alloc_addr))[0..alloc_size];
+            config.backing_allocator.rawFree(raw, alloc_align, @returnAddress());
         }
     };
 }

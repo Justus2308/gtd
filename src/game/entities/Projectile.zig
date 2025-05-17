@@ -60,7 +60,7 @@ pub const Block = struct {
     };
 
     /// Lifetime of returned pointer is coupled to `buffer`.
-    pub fn init(buffer: *align(alignment.toByteUnits()) [size]u8) *Block {
+    pub fn create(buffer: *align(alignment.toByteUnits()) [size]u8) *Block {
         var fba = std.heap.FixedBufferAllocator.init(buffer);
         const a = fba.allocator();
 
@@ -90,9 +90,41 @@ pub const Block = struct {
         block.segment_borders = undefined;
     }
 
-    fn calculateLocalSegments(noalias block: *Block, noalias old: *const Block) void {}
+    fn calculateLocalSegments(
+        noalias block: *Block,
+        noalias old: *const Block,
+        global_segments: *const Segment.Map,
+    ) void {
+        var counters: [Block.local_segment_count]u32 = undefined;
+        var indices: [Block.local_segment_count]u16 = undefined;
+
+        const SortCtx = struct {
+            counters: *[Block.local_segment_count]u32,
+            indices: *[Block.local_segment_count]u16,
+
+            pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+                return (ctx.counters[a] < ctx.counters[b]);
+            }
+
+            pub fn swap(ctx: @This(), a: usize, b: usize) void {
+                mem.swap(u32, &ctx.counters[a], &ctx.counters[b]);
+                mem.swap(u16, &ctx.indices[a], &ctx.indices[b]);
+            }
+        };
+        std.sort.pdqContext(0, Block.local_segment_count, SortCtx{
+            .counters = &counters,
+            .indices = &indices,
+        });
+
+        const old_slice = old.entries.slice();
+        for (old_slice.items(.x), old_slice.items(.y)) |x, y| {
+            if (global_segments.get(x, y))
+        }
+    }
 };
 
 const std = @import("std");
+const game = @import("game");
 const mem = std.mem;
+const Segment = game.Segment;
 const assert = std.debug.assert;

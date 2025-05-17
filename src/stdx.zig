@@ -6,11 +6,16 @@ const posix = std.posix;
 const windows = std.os.windows;
 const testing = std.testing;
 
+const Alignment = mem.Alignment;
+const Allocator = mem.Allocator;
+
 const assert = std.debug.assert;
 const expect = std.testing.expext;
 
 const cache_line = std.atomic.cache_line;
 const target_os = builtin.target.os.tag;
+const is_debug = (builtin.mode == .Debug);
+const is_safe_build = (is_debug or builtin.mode == .ReleaseSafe);
 
 const chunk_allocator = @import("stdx/chunk_allocator.zig");
 pub const ChunkAllocator = chunk_allocator.ChunkAllocator;
@@ -229,12 +234,242 @@ pub fn EnumSubset(comptime E: type, comptime members: []const E) type {
     } });
 }
 
-// I mainly use memory mapping here to keep things simple, using files would either mean
-// leaving file operations to the C depencencies (which is problematic because that would
-// require an absolute path to each asset which we do not have) or providing custom read
-// callbacks which have to satisfy sparsely documented specifications.
-// It's just easier to use plain memory buffers to read/parse from and for the kind of
-// data we're dealing with it probably won't make a difference in performance anyways.
+pub fn Handle(comptime Int: type, comptime invalid_value: Int, comptime UniqueContext: ?type) type {
+    switch (@typeInfo(Int)) {
+        .int => {},
+        else => |info| @compileError("need 'int', got '" ++ @tagName(info) ++ "'"),
+    }
+    return enum(Int) {
+        invalid = invalid_value,
+        _,
+
+        const Self = @This();
+
+        /// Asserts that the returned handle is not `.invalid`.
+        pub fn fromInt(int: Int) Self {
+            assert(int != invalid_value);
+            return @enumFromInt(int);
+        }
+
+        /// Asserts that `handle` is not `.invalid`.
+        pub fn asInt(handle: Self) Int {
+            assert(handle != .invalid);
+            return @intFromEnum(handle);
+        }
+
+        // Ensure that this type has a unique identity to
+        // make the compiler catch improper handle usage.
+        comptime {
+            const Unique = UniqueContext orelse void;
+            _ = Unique;
+        }
+    };
+}
+
+test "Handle type uniqueness" {
+    comptime {
+        const H1 = Handle(u32, 0, void);
+        const H2 = Handle(u32, 0, struct {});
+        const H3 = Handle(u32, 0, struct { a: f32, b: u16 });
+
+        try testing.expect(H1 != H2);
+        try testing.expect(H2 != H3);
+        try testing.expect(H3 != H1);
+
+        const H1Dupe = Handle(u32, 0, void);
+        try testing.expectEqual(H1, H1Dupe);
+
+        const HGeneric1 = Handle(u32, 0, null);
+        const HGeneric2 = Handle(u32, 0, null);
+        try testing.expectEqual(HGeneric1, HGeneric2);
+    }
+}
+
+pub const Fingerprint = struct {
+    name: if (is_debug) [*:0]const u8 else void,
+    id: TypeId,
+
+    pub inline fn take(comptime T: type) Fingerprint {
+        if (is_safe_build) {
+            return Fingerprint{
+                .name = if (is_debug) @typeName(T) else {},
+                .id = typeId(T),
+            };
+        } else {
+            return {};
+        }
+    }
+    /// Runtime-only, to compare `Fingerprint`s at comptime use `eql()`.
+    pub inline fn getId(fingerprint: Fingerprint) usize {
+        return if (is_safe_build) @intFromPtr(fingerprint.id) else undefined;
+    }
+    pub inline fn getName(fingerprint: Fingerprint) []const u8 {
+        return if (is_debug) fingerprint.name[0..std.mem.indexOfSentinel(u8, 0, fingerprint.name)] else "?";
+    }
+    pub inline fn eql(a: Fingerprint, b: Fingerprint) bool {
+        return (a.id == b.id);
+    }
+};
+
+// https://github.com/ziglang/zig/issues/19858#issuecomment-2369861301
+pub const TypeId = if (is_safe_build) *const struct { _: u8 } else void;
+pub inline fn typeId(comptime T: type) TypeId {
+    if (is_safe_build) {
+        return &struct {
+            comptime {
+                _ = T;
+            }
+            var id: @typeInfo(TypeId).pointer.child = undefined;
+        }.id;
+    } else {
+        return {};
+    }
+}
+
+test "take and verify Fingerprint" {
+    const A = u64;
+    const B = struct { a: f32, b: u32 };
+    const C = enum { x, y, z };
+
+    const a = Fingerprint.take(A);
+    const b = Fingerprint.take(B);
+    const c = Fingerprint.take(C);
+
+    comptime {
+        try testing.expectEqual(true, a.eql(a));
+        try testing.expectEqual(true, b.eql(b));
+        try testing.expectEqual(true, c.eql(c));
+
+        try testing.expectEqual(false, a.eql(b));
+        try testing.expectEqual(false, b.eql(c));
+        try testing.expectEqual(false, c.eql(a));
+    }
+
+    if (is_debug) {
+        try testing.expectEqualStrings(@typeName(A), a.getName());
+        try testing.expectEqualStrings(@typeName(B), b.getName());
+        try testing.expectEqualStrings(@typeName(C), c.getName());
+    }
+
+    var id1: usize = undefined;
+    var id2: usize = undefined;
+
+    id1 = a.getId();
+    id2 = b.getId();
+    try testing.expect(id1 != id2);
+
+    id1 = b.getId();
+    id2 = c.getId();
+    try testing.expect(id1 != id2);
+
+    id1 = c.getId();
+    id2 = a.getId();
+    try testing.expect(id1 != id2);
+}
+
+/// Wraps an allocator and only forwards `free`s/shrinking `resize`s to it.
+/// New/growing allocations always fail.
+pub const FreeOnlyAllocator = struct {
+    child_allocator: Allocator,
+
+    pub fn init(child_allocator: Allocator) FreeOnlyAllocator {
+        return .{ .child_allocator = child_allocator };
+    }
+
+    pub fn allocator(foa: *FreeOnlyAllocator) Allocator {
+        return .{
+            .ptr = foa,
+            .vtable = &.{
+                .alloc = alloc,
+                .resize = resize,
+                .remap = Allocator.noRemap,
+                .free = free,
+            },
+        };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
+        _ = .{ ctx, len, alignment, ret_addr };
+        return null;
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) bool {
+        const foa: *FreeOnlyAllocator = @ptrCast(@alignCast(ctx));
+        return if (new_len <= memory.len) foa.child_allocator.rawResize(memory, alignment, new_len, ret_addr) else false;
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) void {
+        const foa: *FreeOnlyAllocator = @ptrCast(@alignCast(ctx));
+        return foa.child_allocator.rawFree(memory, alignment, ret_addr);
+    }
+};
+
+/// Like `std.heap.StackFallbackAllocator` but with an external buffer.
+pub const BufferFallbackAllocator = struct {
+    fallback_allocator: Allocator,
+    fixed_buffer_allocator: std.heap.FixedBufferAllocator,
+
+    pub fn init(buffer: []u8, fallback_allocator: Allocator) BufferFallbackAllocator {
+        return .{
+            .fallback_allocator = fallback_allocator,
+            .fixed_buffer_allocator = .init(buffer),
+        };
+    }
+
+    /// This function both fetches a `Allocator` interface to this
+    /// allocator *and* resets the internal buffer allocator.
+    pub fn get(self: *BufferFallbackAllocator) Allocator {
+        self.fixed_buffer_allocator.end_index = 0;
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .alloc = alloc,
+                .resize = resize,
+                .remap = remap,
+                .free = free,
+            },
+        };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *BufferFallbackAllocator = @ptrCast(@alignCast(ctx));
+        return std.heap.FixedBufferAllocator.alloc(&self.fixed_buffer_allocator, len, alignment, ret_addr) orelse
+            self.fallback_allocator.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *BufferFallbackAllocator = @ptrCast(@alignCast(ctx));
+        if (self.fixed_buffer_allocator.ownsPtr(memory.ptr)) {
+            assert(self.fixed_buffer_allocator.ownsSlice(memory));
+            return std.heap.FixedBufferAllocator.resize(&self.fixed_buffer_allocator, memory, alignment, new_len, ret_addr);
+        } else {
+            return self.fallback_allocator.rawResize(memory, alignment, new_len, ret_addr);
+        }
+        unreachable;
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *BufferFallbackAllocator = @ptrCast(@alignCast(ctx));
+        if (self.fixed_buffer_allocator.ownsPtr(memory.ptr)) {
+            assert(self.fixed_buffer_allocator.ownsSlice(memory));
+            return std.heap.FixedBufferAllocator.remap(&self.fixed_buffer_allocator, memory, alignment, new_len, ret_addr);
+        } else {
+            return self.fallback_allocator.rawRemap(memory, alignment, new_len, ret_addr);
+        }
+        unreachable;
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) void {
+        const self: *BufferFallbackAllocator = @ptrCast(@alignCast(ctx));
+        if (self.fixed_buffer_allocator.ownsPtr(memory.ptr)) {
+            assert(self.fixed_buffer_allocator.ownsSlice(memory));
+            return std.heap.FixedBufferAllocator.free(&self.fixed_buffer_allocator, memory, alignment, ret_addr);
+        } else {
+            return self.fallback_allocator.rawFree(memory, alignment, ret_addr);
+        }
+        unreachable;
+    }
+};
 
 pub const MapFileToMemoryError = std.fs.File.GetSeekPosError || posix.MMapError || std.posix.UnexpectedError;
 pub fn mapFileToMemory(file: std.fs.File) MapFileToMemoryError![]align(std.heap.page_size_min) const u8 {
