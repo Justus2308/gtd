@@ -1,0 +1,28 @@
+.{
+    .name = .midas,
+    .version = "0.0.0",
+
+    .fingerprint = 0x1b9ae5f4dbff7d25, // Changing this has security and trust implications.
+
+    .minimum_zig_version = "0.15.0-dev.532+a3693aae3",
+
+    .dependencies = .{
+        .qoi = .{
+            .url = "git+https://github.com/phoboslab/qoi.git#4461cc37ef08b24f157a5ab7c3f7d6c9e6caa6c0",
+            .hash = "N-V-__8AAFfHAAB_zFYW7D1ABb8TAkjFkfxWXA6jctyLsP3w",
+        },
+        .stb = .{
+            .url = "git+https://github.com/nothings/stb.git#802cd454f25469d3123e678af41364153c132c2a",
+            .hash = "N-V-__8AAPEtTgB7um_-nfKGgYoN_0IZN3K2qNthdPAR6KFV",
+        },
+        .zmesh = .{
+            .url = "git+https://github.com/zig-gamedev/zmesh.git#f8f528128704ae879a16ddb0a3470c5e0a144a20",
+            .hash = "zmesh-0.11.0-dev-oO3A5gx7CgCBPHsGeuNzwzXAyEvs57u39AD5EUZTScli",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

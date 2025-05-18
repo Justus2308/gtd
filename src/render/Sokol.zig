@@ -5,11 +5,11 @@ const Self = @This();
 
 const std = @import("std");
 const stdx = @import("stdx");
-const common = @import("common.zig");
 const sokol = @import("sokol");
 const gfx = sokol.gfx;
 const mem = std.mem;
 const Allocator = mem.Allocator;
+const Renderer = @import("Renderer.zig");
 const assert = std.debug.assert;
 
 pub fn init(allocator: Allocator) Allocator.Error!Self {
@@ -59,7 +59,7 @@ pub const Shader = gfx.Shader;
 
 pub const Pipeline = gfx.Pipeline;
 
-fn attrFormatToSokol(format: common.Attribute.Format) gfx.VertexFormat {
+fn attrFormatToSokol(format: Renderer.Attribute.Format) gfx.VertexFormat {
     return switch (format) {
         .f32 => .FLOAT,
         .v2f32 => .FLOAT2,
@@ -97,9 +97,9 @@ fn attrFormatToSokol(format: common.Attribute.Format) gfx.VertexFormat {
 }
 
 pub fn createPipeline(
-    comptime kind: common.PipelineKind,
+    comptime kind: Renderer.PipelineKind,
     shader: Shader,
-    options: common.PipelineOptions(kind),
+    options: Renderer.PipelineOptions(kind),
 ) Pipeline {
     const desc: gfx.PipelineDesc = switch (kind) {
         .graphics => graphics: {
@@ -156,7 +156,7 @@ pub const max_attr_count = gfx.max_vertex_attributes;
 
 pub const Sampler = gfx.Sampler;
 
-pub fn createSampler(options: common.SamplerOptions) Sampler {
+pub fn createSampler(options: Renderer.SamplerOptions) Sampler {
     const desc = gfx.SamplerDesc{
         .min_filter = switch (options.min_filter) {
             .nearest => .NEAREST,
@@ -221,7 +221,7 @@ pub fn destroyTexture(image: Image) void {
 
 pub const Buffer = gfx.Buffer;
 
-pub fn createBuffer(kind: common.BufferKind, content: common.BufferContent) Buffer {
+pub fn createBuffer(kind: Renderer.BufferKind, content: Renderer.BufferContent) Buffer {
     const size: usize, const data: gfx.Range, const usage: gfx.Usage = switch (content) {
         .static => |bytes| .{ 0, gfx.asRange(bytes), .IMMUTABLE },
         .dynamic => |size| .{ size, .{}, .DYNAMIC },

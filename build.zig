@@ -204,11 +204,11 @@ pub fn build(b: *std.Build) void {
     });
     const zmesh_mod = zmesh_dep.module("root");
 
-    const zigimg_dep = b.dependency("zigimg", .{
+    const qoi_dep = b.dependency("qoi", .{
         .target = target,
         .optimize = optimize,
     });
-    const zigimg_mod = zigimg_dep.module("zigimg");
+    const qoi_mod = qoi_dep.module("qoi");
 
     const s2s_dep = b.dependency("s2s", .{
         .target = target,
@@ -283,7 +283,7 @@ pub fn build(b: *std.Build) void {
     };
     const external_imports = [_]std.Build.Module.Import{
         .{ .name = "sokol", .module = sokol_mod },
-        .{ .name = "zigimg", .module = zigimg_mod },
+        .{ .name = "qoi", .module = qoi_mod },
         .{ .name = "zmesh", .module = zmesh_mod },
         .{ .name = "s2s", .module = s2s_mod },
         .{ .name = "zalgebra", .module = zalgebra_mod },

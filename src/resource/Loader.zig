@@ -3,14 +3,19 @@ vtable: *const VTable,
 
 const Loader = @This();
 
-pub const Error = (Allocator.Error || File.OpenError.AccessDenied || File.OpenError.FileNotFound || error{Unexpected});
+pub const Error = (Allocator.Error || error{ AccessDenied, FileNotFound, Unexpected });
 
 pub const VTable = struct {
     /// Should use `Loader.autoHash()` to produce its final result to make
     /// hash collisions as unlikely as possible.
     hash: *const fn (*anyopaque) u64,
-    load: *const fn (*anyopaque, allocator: Allocator) anyerror!void,
+    load: *const fn (*anyopaque, allocator: Allocator, context: Context) anyerror!void,
     unload: *const fn (*anyopaque, allocator: Allocator) void,
+};
+
+pub const Context = struct {
+    asset_dir: std.fs.Dir,
+    shader_context: @import("render").Renderer.ShaderContext,
 };
 
 /// Hashes `key` following pointers recursively.
@@ -24,8 +29,8 @@ pub inline fn rawHash(loader: Loader) u64 {
     return loader.vtable.hash(loader.ptr);
 }
 
-pub inline fn rawLoad(loader: Loader, allocator: Allocator) !void {
-    return loader.vtable.load(loader.ptr, allocator);
+pub inline fn rawLoad(loader: Loader, allocator: Allocator, context: Context) !void {
+    return loader.vtable.load(loader.ptr, allocator, context);
 }
 
 pub inline fn rawUnload(loader: Loader, allocator: Allocator) void {
@@ -39,16 +44,12 @@ pub fn generateHandle(loader: Loader) Handle {
     return .fromInt(hash);
 }
 
-pub fn load(loader: Loader, allocator: Allocator) Error!void {
-    loader.rawLoad(allocator) catch |err| switch (err) {
-        inline else => |e| {
-            if (@hasField(std.meta.FieldEnum(Error), @errorName(e))) {
-                return @as(Error, @errorCast(e));
-            } else {
-                log.err("failed to load resource: unexpected error: {s}", .{@errorName(e)});
-                return Error.Unexpected;
-            }
-            unreachable;
+pub fn load(loader: Loader, allocator: Allocator, context: Context) Error!void {
+    loader.rawLoad(allocator, context) catch |err| switch (err) {
+        Error.OutOfMemory, Error.AccessDenied, Error.FileNotFound, Error.Unexpected => return @errorCast(err),
+        else => {
+            log.err("failed to load resource: unexpected error: {s}", .{@errorName(err)});
+            return Error.Unexpected;
         },
     };
 }
