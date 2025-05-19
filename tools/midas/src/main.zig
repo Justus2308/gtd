@@ -65,7 +65,7 @@ const ParsedArgs = struct {
             break :kvs tuples;
         });
 
-        pub fn outSuffix(command: Command) [:0]const u8 {
+        pub fn outFileExtension(command: Command) [:0]const u8 {
             return switch (command) {
                 .img => ".qoi",
                 .mesh => ".zon",
@@ -131,11 +131,11 @@ fn parseArgs(allocator: Allocator, writer: anytype) !ParsedArgs {
                     .@"-o" => {
                         if (command) |cmd| {
                             const value = try parseArgValue(body, &args);
-                            const suffix = cmd.outSuffix();
-                            const output = if (std.mem.endsWith(u8, value, suffix))
+                            const extension = cmd.outFileExtension();
+                            const output = if (std.mem.eql(u8, extension, std.fs.path.extension(value)))
                                 try arena_allocator.dupeZ(u8, value)
                             else
-                                try std.mem.concatWithSentinel(arena_allocator, u8, &.{ value, suffix }, 0);
+                                try std.mem.concatWithSentinel(arena_allocator, u8, &.{ value, extension }, 0);
                             try outputs.append(arena_allocator, output);
                         } else {
                             log.err("encountered command option before command: {s}", .{arg});
@@ -184,15 +184,15 @@ fn parseArgs(allocator: Allocator, writer: anytype) !ParsedArgs {
 
     if (command_resolved == .pack) {
         if (outputs.items.len == 0) {
-            const suffix = ParsedArgs.Command.pack.outSuffix();
-            const output = try std.mem.concatWithSentinel(arena_allocator, u8, &.{ inputs_resolved[0], suffix }, 0);
+            const extension = ParsedArgs.Command.pack.outFileExtension();
+            const output = try ensureFileExtension(arena_allocator, extension, inputs_resolved[0]);
             try outputs.append(arena_allocator, output);
         }
         assert(outputs.items.len == 1);
     } else if (inputs_resolved.len > outputs.items.len) {
-        const suffix = command_resolved.outSuffix();
+        const extension = command_resolved.outFileExtension();
         for (inputs_resolved[outputs.items.len..inputs_resolved.len]) |input| {
-            const output = try std.mem.concatWithSentinel(arena_allocator, u8, &.{ input, suffix }, 0);
+            const output = try ensureFileExtension(arena_allocator, extension, input);
             try outputs.append(arena_allocator, output);
         }
     }
@@ -207,6 +207,14 @@ fn parseArgs(allocator: Allocator, writer: anytype) !ParsedArgs {
         .inputs = inputs_resolved,
         .outputs = outputs_resolved,
     };
+}
+
+fn ensureFileExtension(allocator: Allocator, extension: [:0]const u8, path: [:0]const u8) Allocator.Error![:0]const u8 {
+    // TODO find a better solution for this
+    const path_without_extension_len = (@intFromPtr(std.fs.path.extension(path).ptr) - @intFromPtr(path.ptr));
+    const path_without_extension = path[0..path_without_extension_len];
+    const result = try std.mem.concatWithSentinel(allocator, u8, &.{ path_without_extension, extension }, 0);
+    return result;
 }
 
 fn parseArgValue(body: [:0]const u8, args: *std.process.ArgIterator) ![:0]const u8 {
