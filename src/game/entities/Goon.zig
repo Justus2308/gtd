@@ -337,7 +337,7 @@ pub const Block = struct {
     };
 
     /// Lifetime of returned pointer is coupled to `buffer`.
-    pub fn init(effect_gpa: Allocator, buffer: *align(alignment.toByteUnits()) [size]u8) *Block {
+    pub fn create(effect_gpa: Allocator, buffer: *align(alignment.toByteUnits()) [size]u8) *Block {
         var fba = heap.FixedBufferAllocator.init(buffer);
         const a = fba.allocator();
 
@@ -413,17 +413,7 @@ pub const Block = struct {
     fn update(task: *Task) void {
         const ctx: *UpdateTaskCtx = @fieldParentPtr("task", task);
 
-        const batch_size = comptime batch_size: {
-            var Biggest = void;
-            for (@typeInfo(Goon).@"struct".fields) |field| {
-                if (@sizeOf(field.type) > @sizeOf(Biggest)) {
-                    Biggest = field.type;
-                }
-            }
-            break :batch_size std.simd.suggestVectorLength(Biggest) orelse default_batch_size;
-        };
-        const vconf = domath.VectorConfig{ .batch_size = batch_size };
-        const fpv = domath.vectorEx(1, f32, vconf);
+        const fpv = domath.vector(1, f32);
 
         // APPLY OLD EFFECTS
 

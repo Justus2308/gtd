@@ -15,9 +15,9 @@
             .url = "git+https://github.com/nothings/stb.git#802cd454f25469d3123e678af41364153c132c2a",
             .hash = "N-V-__8AAPEtTgB7um_-nfKGgYoN_0IZN3K2qNthdPAR6KFV",
         },
-        .zmesh = .{
-            .url = "git+https://github.com/zig-gamedev/zmesh.git#f8f528128704ae879a16ddb0a3470c5e0a144a20",
-            .hash = "zmesh-0.11.0-dev-oO3A5gx7CgCBPHsGeuNzwzXAyEvs57u39AD5EUZTScli",
+        .cgltf = .{
+            .url = "git+https://github.com/jkuhlmann/cgltf.git#08470a2b08980cd3221002a9b2ef29a37e3111dc",
+            .hash = "N-V-__8AAIdlBAANRThrApqSC8RD2cFNfeA2mGhZKK1w27NJ",
         },
     },
     .paths = .{

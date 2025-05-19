@@ -27,7 +27,8 @@ pub const Map = struct {
 
         var accu = ns.Accumulator.begin(.normalize, in, .{});
         accu.cont(.mul, .{&in_xy_max});
-        accu.
+        var accu_indices = accu.cast(u16);
+        accu_indices.end(comptime op: Op, noalias extra_args: (unknown type), noalias out: (unknown type))
     }
 
     /// Draw a circle with `max_entity_radius` around every point on the discretized path and
