@@ -10,43 +10,63 @@ pub const Options = struct {
     is_uncompressed: bool = false,
 };
 
-pub fn convert(bytes: []const u8, options: Options) ![]const u8 {
-    _ = bytes;
-    _ = options;
-    lz4hc.LZ4_createStreamHC();
-    lz4hc.LZ4_compress_HC(null, null, 0, 0, lz4hc.LZ4HC_CLEVEL_OPT_MIN);
-    return error.Todo;
-}
-
-pub const Dictionary = struct {
+pub const Compressor = struct {
     limited_allocator: LimitedAllocator,
-    bytes: std.ArrayListUnmanaged(u8),
+    level: c_int,
+    dict_stream: *lz4hc.LZ4_streamHC_t,
+    working_stream: *lz4hc.LZ4_streamHC_t,
+    source_buffer: Buffer,
+    dest_buffer: Buffer,
 
     pub const Error = Allocator.Error || error{ Zdict, Lz4hc };
 
+    pub const Buffer = std.ArrayListUnmanaged(u8);
+
     pub const max_size = @as(usize, lz4hc.LZ4HC_MAXD);
-    pub const default_size = Dictionary.max_size;
+    pub const default_size = Compressor.max_size;
 
-    pub fn init(allocator: Allocator) Allocator.Error!Dictionary {
-        return .initWithSize(allocator, Dictionary.default_size);
-    }
+    pub fn init(allocator: Allocator, level: Compressor.Level) Compressor.Error!Compressor {
+        const dict_stream = try Compressor.createStream();
+        errdefer Compressor.destroyStream(dict_stream);
+        const working_stream = try Compressor.createStream();
+        errdefer Compressor.destroyStream(working_stream);
 
-    pub fn initWithMaxSize(allocator: Allocator, size: usize) Allocator.Error!Dictionary {
-        assert(size <= Dictionary.max_size);
-        var dict = Dictionary{
+        return .{
             .limited_allocator = .init(allocator, root.maxRss() orelse std.math.maxInt(u64)),
-            .bytes = undefined,
+            .level = level.value(),
+            .dict_stream = dict_stream,
+            .working_stream = working_stream,
+            .source_buffer = .empty,
+            .dest_buffer = .empty,
         };
-        dict.bytes = try .initCapacity(dict.limited_allocator.allocator(), size);
-        return dict;
     }
 
-    pub fn deinit(dict: *Dictionary) void {
-        dict.bytes.deinit(dict.limited_allocator.allocator());
-        dict.* = undefined;
+    pub fn deinit(compressor: *Compressor) void {
+        Compressor.destroyStream(compressor.dict_stream);
+        Compressor.destroyStream(compressor.working_stream);
+
+        const allocator = compressor.limited_allocator.allocator();
+        compressor.source_buffer.deinit(allocator);
+        compressor.dest_buffer.deinit(allocator);
+
+        compressor.* = undefined;
     }
 
-    /// Glorified slice
+    fn createStream() Compressor.Error!*lz4hc.LZ4_streamHC_t {
+        const stream: *lz4hc.LZ4_streamHC_t = lz4hc.LZ4_createStreamHC() orelse {
+            root.log.err("lz4hc: createStream failed", .{});
+            return Error.Lz4hc;
+        };
+        return stream;
+    }
+    fn resetStream(compressor: Compressor, stream: *lz4hc.LZ4_streamHC_t) void {
+        lz4hc.LZ4_resetStreamHC_fast(stream, compressor.level);
+    }
+    fn destroyStream(stream: *lz4hc.LZ4_streamHC_t) void {
+        assert(lz4hc.LZ4_freeStreamHC(stream) == 0);
+    }
+
+    /// Glorified slice with data layout suitable for zdict
     pub const Compressable = struct {
         ptr: [*]const u8,
         len: usize,
@@ -54,11 +74,24 @@ pub const Dictionary = struct {
         pub const List = std.MultiArrayList(Compressable);
     };
 
-    pub fn train(dict: *Dictionary, samples: Compressable.List.Slice) Dictionary.Error!void {
-        dict.bytes.expandToCapacity();
+    pub fn train(compressor: *Compressor, samples: Compressable.List.Slice) Compressor.Error!void {
+        return compressor.trainMaxSize(samples, Compressor.default_size);
+    }
+
+    pub fn trainMaxSize(
+        compressor: *Compressor,
+        samples: Compressable.List.Slice,
+        max_dict_size: usize,
+    ) Compressor.Error!void {
+        assert(max_dict_size <= Compressor.max_size);
+
+        const allocator = compressor.limited_allocator.allocator();
+        const dict_buffer = try allocator.alloc(u8, default_size);
+        defer allocator.free(dict_buffer);
+
         const zdict_retval = zdict.ZDICT_trainFromBuffer(
-            dict.bytes.items.ptr,
-            dict.bytes.items.len,
+            dict_buffer.ptr,
+            dict_buffer.len,
             samples.items(.ptr),
             samples.items(.len),
             @intCast(samples.len),
@@ -70,64 +103,65 @@ pub const Dictionary = struct {
             });
             return Error.Zdict;
         }
-        dict.bytes.shrinkRetainingCapacity(zdict_retval);
+
+        compressor.resetStream(compressor.dict_stream);
+
+        const lz4hc_retval = lz4hc.LZ4_loadDictHC(compressor.dict_stream, dict_buffer.ptr, @intCast(dict_buffer.len));
+        if (lz4hc_retval != 0) {
+            root.log.err("lz4hc: loadDictHC failed: retval {d}", .{lz4hc_retval});
+            return Error.Lz4hc;
+        }
     }
 
-    pub fn get(dict: Dictionary) []const u8 {
-        return dict.bytes.items;
-    }
-
-    pub const CompressionLevel = union(enum) {
+    pub const Level = union(enum) {
         min,
         default,
         opt_min,
         max,
         custom: c_int,
 
-        pub fn value(level: CompressionLevel) c_int {
+        pub fn value(level: Level) c_int {
             return switch (level) {
                 .min => lz4hc.LZ4HC_CLEVEL_MIN,
                 .default => lz4hc.LZ4HC_CLEVEL_DEFAULT,
                 .opt_min => lz4hc.LZ4HC_CLEVEL_OPT_MIN,
                 .max => lz4hc.LZ4HC_CLEVEL_MAX,
-                .custom => |val| val,
+                .custom => |val| std.math.clamp(val, lz4hc.LZ4HC_CLEVEL_MIN, lz4hc.LZ4HC_CLEVEL_MAX),
             };
         }
     };
 
-    // pub fn compress(
-    //     dict: Dictionary,
-    //     reader: anytype,
-    //     writer: anytype,
-    //     level: CompressionLevel,
-    // ) (Dictionary.Error || @TypeOf(reader).Error || @TypeOf(writer).Error)!void {
-    //     const allocator = dict.limited_allocator.allocator();
+    pub fn compress(
+        compressor: *Compressor,
+        reader: anytype,
+        writer: anytype,
+    ) (Compressor.Error || @TypeOf(reader).Error || @TypeOf(writer).Error)!void {
+        const allocator = compressor.limited_allocator.allocator();
 
-    //     const stream = lz4hc.LZ4_createStream() orelse {
-    //         root.log.err("lz4hc: createStream failed", .{});
-    //         return Error.Lz4hc;
-    //     };
-    //     defer assert(lz4hc.LZ4_freeStreamHC(stream) == 0);
+        compressor.resetStream(compressor.working_stream);
+        lz4hc.LZ4_attach_dictionary(compressor.working_stream, compressor.dict_stream);
 
-    //     lz4hc.LZ4_resetStreamHC_fast(stream, level.value());
-    //     lz4hc.LZ4_loadDictHC(stream, dict.bytes.items.ptr, @intCast(dict.bytes.items.len));
+        {
+            var source_managed = compressor.source_buffer.toManaged(allocator);
+            defer compressor.source_buffer = source_managed.moveToUnmanaged();
 
-    //     const source = try reader.readAllAlloc(allocator, root.maxRss() orelse std.math.maxInt(c_int));
-    //     defer allocator.free(source);
+            source_managed.clearRetainingCapacity();
+            try reader.readAllArrayList(&source_managed, @truncate(compressor.limited_allocator.bytes_remaining));
+        }
 
-    //     const max_dest_len = lz4hc.LZ4_compressBound(@intCast(source.len));
+        const max_dest_len = lz4hc.LZ4_compressBound(@intCast(compressor.source_buffer.items.len));
+        try compressor.dest_buffer.ensureTotalCapacity(allocator, @intCast(max_dest_len));
+        compressor.dest_buffer.expandToCapacity();
 
-    //     const dest = try allocator.alloc(u8, max_dest_len);
+        const compressed_len = lz4hc.LZ4_compress_HC_continue(
+            compressor.working_stream,
+            compressor.source_buffer.items.ptr,
+            compressor.dest_buffer.items.ptr,
+            @intCast(compressor.source_buffer.items.len),
+            max_dest_len,
+        );
+        compressor.dest_buffer.resize(allocator, compressed_len) catch unreachable;
 
-    //     var source_bytes_remaining: c_int = @intCast(source.len);
-    //     while (source) {
-    //         const res = lz4hc.LZ4_compress_HC_continue_destSize(stream, source.ptr, buffer.ptr, &source_bytes_remaining, @intCast(buffer.len));
-    //     }
-
-    //     // lz4hc.LZ4_compress_HC_continue(stream, src: [*c]const u8, dst: [*c]u8, srcSize: c_int, maxDstSize: c_int)
-    // }
+        try writer.writeAll(compressor.dest_buffer.items);
+    }
 };
-
-pub fn freeConverted(bytes: []const u8) void {
-    _ = bytes;
-}

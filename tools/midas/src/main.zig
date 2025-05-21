@@ -52,6 +52,9 @@ pub fn main() !void {
         log.info("inputs: {}", .{std.json.fmt(inputs, .{})});
         log.info("outputs: {}", .{std.json.fmt(outputs, .{})});
     }
+
+    var comp = try pack.Compressor.init(gpa, .default);
+    defer comp.deinit();
 }
 
 const ParsedArgs = struct {
