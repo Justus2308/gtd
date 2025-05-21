@@ -36,6 +36,9 @@
             .url = "https://github.com/floooh/sokol-tools-bin/archive/9abc4ce9a851e199105ce7929f5d616bbb7118b4.tar.gz",
             .hash = "sokolshdc-0.1.0-r2KZDkQ7kATqMDO-3JQ0tyE0YMfRYrmpYMtoj3vf9VK5",
         },
+        .midas = .{
+            .path = "tools/midas",
+        },
     },
     .paths = .{
         "build.zig",

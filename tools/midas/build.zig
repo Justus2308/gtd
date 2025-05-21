@@ -19,6 +19,7 @@ pub fn build(b: *std.Build) void {
     const stbi_mod = stbStyleModule(b, "stb", "stb_image.h", target, optimize, &.{
         "-std=c99",
         "-DSTB_IMAGE_IMPLEMENTATION",
+        "-DSTBI_FAILURE_USERMSG",
         "-DSTBI_NO_STDIO",
     });
 
@@ -26,6 +27,83 @@ pub fn build(b: *std.Build) void {
         "-std=c99",
         "-DCGLTF_IMPLEMENTATION",
     });
+
+    const lz4hc_mod = lz4hc: {
+        const dep = b.dependency("lz4", .{});
+        const tc = b.addTranslateC(.{
+            .root_source_file = dep.path("lib/lz4hc.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const mod = tc.createModule();
+        const lib_path = dep.path("lib");
+        mod.addIncludePath(lib_path);
+        mod.addCSourceFiles(.{
+            .root = lib_path,
+            .files = &.{
+                "lz4.c",
+                "lz4hc.c",
+            },
+            .flags = &.{
+                "-std=c99",
+            },
+            .language = .c,
+        });
+        break :lz4hc mod;
+    };
+
+    // Only used to build a dictionary for lz4hc
+    // https://github.com/facebook/zstd/blob/dev/lib/README.md
+    const zdict_mod = zdict: {
+        const dep = b.dependency("zstd", .{});
+        const tc = b.addTranslateC(.{
+            .root_source_file = dep.path("lib/zdict.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const mod = tc.createModule();
+        mod.addIncludePath(dep.path("lib/common"));
+        mod.addIncludePath(dep.path("lib/compress"));
+        mod.addIncludePath(dep.path("lib/dictBuilder"));
+        mod.addCSourceFiles(.{
+            .root = dep.path("lib"),
+            .files = &.{
+                "common/debug.c",
+                "common/entropy_common.c",
+                "common/error_private.c",
+                "common/fse_decompress.c",
+                "common/pool.c",
+                "common/threading.c",
+                "common/xxhash.c",
+                "common/zstd_common.c",
+
+                "compress/fse_compress.c",
+                "compress/hist.c",
+                "compress/huf_compress.c",
+                "compress/zstd_compress.c",
+                "compress/zstd_compress_literals.c",
+                "compress/zstd_compress_sequences.c",
+                "compress/zstd_compress_superblock.c",
+                "compress/zstd_double_fast.c",
+                "compress/zstd_fast.c",
+                "compress/zstd_lazy.c",
+                "compress/zstd_ldm.c",
+                "compress/zstd_opt.c",
+                "compress/zstd_preSplit.c",
+                "compress/zstdmt_compress.c",
+
+                "dictBuilder/cover.c",
+                "dictBuilder/divsufsort.c",
+                "dictBuilder/fastcover.c",
+                "dictBuilder/zdict.c",
+            },
+            .flags = &.{
+                "-std=c99",
+            },
+            .language = .c,
+        });
+        break :zdict mod;
+    };
 
     const midas_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -37,6 +115,8 @@ pub fn build(b: *std.Build) void {
     midas_mod.addImport("qoi", qoi_mod);
     midas_mod.addImport("stbi", stbi_mod);
     midas_mod.addImport("cgltf", cgltf_mod);
+    midas_mod.addImport("lz4hc", lz4hc_mod);
+    midas_mod.addImport("zdict", zdict_mod);
 
     const midas_exe = b.addExecutable(.{
         .name = "midas",

@@ -123,12 +123,8 @@ pub fn build(b: *std.Build) void {
     const is_pack_assets = b.option(
         bool,
         "pack-assets",
-        "Pack all assets together with the executable (default: true for web builds)",
-    ) orelse (target_category == .web);
-
-    if (is_pack_assets and target_category != .web) {
-        log.info("asset packing is only supported for web targets at the moment", .{});
-    }
+        "Pack all assets together with the executable (default: true)",
+    ) orelse true;
 
     const shader_lang_hint = b.option(
         ShaderLanguage,
@@ -198,12 +194,6 @@ pub fn build(b: *std.Build) void {
     runtime_options.addOption(bool, "is_use_compute", is_use_compute);
 
     // Configure dependencies
-    const zmesh_dep = b.dependency("zmesh", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const zmesh_mod = zmesh_dep.module("root");
-
     const qoi_dep = b.dependency("qoi", .{
         .target = target,
         .optimize = optimize,
@@ -267,6 +257,42 @@ pub fn build(b: *std.Build) void {
     sokol_shdc_step.dependOn(&sokol_shdc_cmd.step);
     sokol_shdc_step.dependOn(&sokol_shdc_install_file.step);
 
+    // Convert/pack assets
+    // TODO: respect 'is_pack_assets'
+    const midas_dep = b.dependency("midas", .{
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    const midas_exe = midas_dep.artifact("midas");
+
+    const midas_pack_cmd = std.Build.Step.Run.create(b, "midas-pack");
+    midas_pack_cmd.addArtifactArg(midas_exe);
+    midas_pack_cmd.addArg("pack");
+    const midas_pack_out = midas_pack_cmd.addPrefixedOutputFileArg("-o=", "assets.midaspack");
+
+    var asset_dir = b.build_root.handle.openDir("assets", .{ .iterate = true }) catch |err|
+        std.debug.panic("failed to open asset dir: {s}", .{@errorName(err)});
+    defer asset_dir.close();
+
+    var asset_walker = asset_dir.walk(b.allocator) catch @panic("OOM");
+    defer asset_walker.deinit();
+
+    while (asset_walker.next() catch |err| std.debug.panic(
+        "failed to access asset: {s}",
+        .{@errorName(err)},
+    )) |entry| {
+        if (entry.kind == .file) {
+            const asset_sub_path = b.path(b.pathJoin(&.{ "assets", entry.path }));
+            midas_pack_cmd.addFileArg(asset_sub_path);
+        }
+    }
+
+    const midas_pack_install_file = b.addInstallFile(midas_pack_out, "gen");
+
+    const midas_pack_step = b.step("midas-pack", "Convert assets into Midas Asset Pack");
+    midas_pack_step.dependOn(&midas_pack_cmd.step);
+    midas_pack_step.dependOn(&midas_pack_install_file.step);
+
     // Declare modules and artifacts
     const shader_mod = b.createModule(.{
         .root_source_file = sokol_shdc_out,
@@ -274,6 +300,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
     shader_mod.addImport("sokol", sokol_mod);
+
+    const midas_pack_mod = b.createModule(.{
+        .root_source_file = midas_pack_out,
+    });
 
     const internal_imports = [_]std.Build.Module.Import{
         createImport(b, "game", optimize, target),
@@ -284,11 +314,11 @@ pub fn build(b: *std.Build) void {
     const external_imports = [_]std.Build.Module.Import{
         .{ .name = "sokol", .module = sokol_mod },
         .{ .name = "qoi", .module = qoi_mod },
-        .{ .name = "zmesh", .module = zmesh_mod },
         .{ .name = "s2s", .module = s2s_mod },
         .{ .name = "zalgebra", .module = zalgebra_mod },
         .{ .name = "domath", .module = domath_mod },
         .{ .name = "shader", .module = shader_mod },
+        .{ .name = "assets", .module = midas_pack_mod },
     };
     addAllImports(&internal_imports, &external_imports);
     addImportTests(b, &internal_imports);
@@ -308,6 +338,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addOptions("options", runtime_options);
 
     b.getInstallStep().dependOn(&sokol_shdc_cmd.step);
+    b.getInstallStep().dependOn(&midas_pack_cmd.step);
 
     const run_cmd, const compile_check = if (target_category == .web) blk: {
         const backend: WebBackend = switch (sokol_backend) {

@@ -16,8 +16,16 @@
             .hash = "N-V-__8AAPEtTgB7um_-nfKGgYoN_0IZN3K2qNthdPAR6KFV",
         },
         .cgltf = .{
-            .url = "git+https://github.com/jkuhlmann/cgltf.git#08470a2b08980cd3221002a9b2ef29a37e3111dc",
-            .hash = "N-V-__8AAIdlBAANRThrApqSC8RD2cFNfeA2mGhZKK1w27NJ",
+            .url = "git+https://github.com/jkuhlmann/cgltf.git?ref=v1.15#360db1a95480fe102ae9c69b27c5d101167ff5ba",
+            .hash = "N-V-__8AAKFjBABZzn84N4iiLQyNQSMVsv5XBJSvZTPcQL2H",
+        },
+        .lz4 = .{
+            .url = "git+https://github.com/lz4/lz4.git?ref=v1.10.0#ebb370ca83af193212df4dcbadcc5d87bc0de2f0",
+            .hash = "N-V-__8AAJqFGQCAYVWzZWCL3-wqB2UCxRqBJ68dgAtVEtPu",
+        },
+        .zstd = .{
+            .url = "git+https://github.com/facebook/zstd.git?ref=v1.5.7#f8745da6ff1ad1e7bab384bd1f9d742439278e99",
+            .hash = "N-V-__8AAGxifwAAGwXwvsnl_aOXFGLZTeYCu0WBhuEXr96u",
         },
     },
     .paths = .{
