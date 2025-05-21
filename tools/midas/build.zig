@@ -10,12 +10,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const qoi_mod = stbStyleModule(b, "qoi", "qoi.h", target, optimize, &.{
-        "-std=c99",
-        "-DQOI_IMPLEMENTATION",
-        "-DQOI_NO_STDIO",
-    });
-
     const stbi_mod = stbStyleModule(b, "stb", "stb_image.h", target, optimize, &.{
         "-std=c99",
         "-DSTB_IMAGE_IMPLEMENTATION",
@@ -112,7 +106,6 @@ pub fn build(b: *std.Build) void {
     });
 
     midas_mod.addImport("build.zig.zon", build_zig_zon_mod);
-    midas_mod.addImport("qoi", qoi_mod);
     midas_mod.addImport("stbi", stbi_mod);
     midas_mod.addImport("cgltf", cgltf_mod);
     midas_mod.addImport("lz4hc", lz4hc_mod);

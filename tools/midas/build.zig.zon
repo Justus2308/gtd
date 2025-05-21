@@ -7,10 +7,6 @@
     .minimum_zig_version = "0.15.0-dev.532+a3693aae3",
 
     .dependencies = .{
-        .qoi = .{
-            .url = "git+https://github.com/phoboslab/qoi.git#4461cc37ef08b24f157a5ab7c3f7d6c9e6caa6c0",
-            .hash = "N-V-__8AAFfHAAB_zFYW7D1ABb8TAkjFkfxWXA6jctyLsP3w",
-        },
         .stb = .{
             .url = "git+https://github.com/nothings/stb.git#802cd454f25469d3123e678af41364153c132c2a",
             .hash = "N-V-__8AAPEtTgB7um_-nfKGgYoN_0IZN3K2qNthdPAR6KFV",

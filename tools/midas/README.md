@@ -1,6 +1,6 @@
 # Midas Asset Converter
 
-A small CLI tool to convert common media exchange formats (all common image formats and glTF/GLB files) into formats used by Goons TD (QOI and a custom 3D model format).
+A small CLI tool to convert common media exchange formats (all common image formats and glTF/GLB files) into custom formats used by Goons TD (.midasimg and .midasmesh).
 Can also produce a compressed Midas Asset Pack (.midaspack) to save disk space and file operations.
 
 ## Usage

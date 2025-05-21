@@ -1,6 +1,5 @@
 const std = @import("std");
 const stbi = @import("stbi");
-const qoi = @import("qoi");
 const root = @import("root");
 const assert = std.debug.assert;
 const log = root.log;
@@ -16,20 +15,7 @@ pub fn convert(bytes: []const u8, options: void) ![]const u8 {
         return error.StbImageLoadFailed;
     };
     defer stbi.stbi_image_free(pixels);
-
-    const qoi_desc = qoi.qoi_desc{
-        .width = @intCast(width),
-        .height = @intCast(height),
-        .channels = @intCast(channels),
-        .colorspace = qoi.QOI_SRGB,
-    };
-    var qoi_len: c_int = undefined;
-    const converted = @as(?[*]u8, @ptrCast(qoi.qoi_encode(pixels, &qoi_desc, &qoi_len))) orelse {
-        log.err("qoi: failed to encode image", .{});
-        return error.QoiImageEncodeFailed;
-    };
-    assert(qoi_len > 0);
-    return converted[0..@intCast(qoi_len)];
+    return error.Todo;
 }
 
 pub fn freeConverted(bytes: []const u8) void {
