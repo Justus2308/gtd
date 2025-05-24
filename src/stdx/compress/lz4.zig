@@ -15,14 +15,44 @@ pub const Error = InStream.ReadError || InStream.Reader.NoEofError || OutStream.
 pub const InStream = std.io.FixedBufferStream([]const u8);
 pub const OutStream = std.io.FixedBufferStream([]u8);
 
-pub fn decompress(noalias dest: []u8, noalias source: []const u8) Error!void {
-    return decompressWithDict(dest, source, &.{});
+pub inline fn decompress(noalias dest: []u8, noalias source: []const u8) Error!void {
+    return innerDecompress(dest, source, .any, &.{});
 }
 
-pub fn decompressWithDict(
+pub inline fn decompressWithDict(
     noalias dest: []u8,
     noalias source: []const u8,
-    noalias dict: []const u8,
+    noalias dict: Dict,
+) Error!void {
+    return switch (dict) {
+        .any => |any| innerDecompress(dest, source, .any, any),
+        .exact => |exact| innerDecompress(dest, source, .exact, exact),
+    };
+}
+
+pub const Dict = union(Dict.Kind) {
+    any: []const u8,
+    /// 64KiB, makes OOB checks for offset into dict unnecessary
+    exact: *const [@as(usize, 1) << 16]u8,
+
+    pub const Kind = enum {
+        any,
+        exact,
+
+        pub inline fn getMatchStart(comptime kind: Dict.Kind, dict: @FieldType(Dict, @tagName(kind)), offset: u16) Error!usize {
+            return switch (kind) {
+                .any => std.math.sub(usize, dict.len, offset),
+                .exact => (dict.len - offset),
+            };
+        }
+    };
+};
+
+fn innerDecompress(
+    noalias dest: []u8,
+    noalias source: []const u8,
+    comptime dict_kind: Dict.Kind,
+    noalias dict: @FieldType(Dict, @tagName(dict_kind)),
 ) Error!void {
     errdefer if (is_debug) @memset(dest, undefined);
 
@@ -67,7 +97,7 @@ pub fn decompressWithDict(
         if (offset > out_stream.pos) {
             // match starts inside dict
             const dict_offset = (offset - out_stream.pos);
-            const dict_match_start = std.math.sub(usize, dict.len, dict_offset) catch {
+            const dict_match_start = dict_kind.getMatchStart(dict, dict_offset) catch {
                 @branchHint(.cold);
                 log.err("decompress failed: match offset would underflow dict (offset={d}, dict_len={d})", .{
                     offset,
@@ -75,7 +105,7 @@ pub fn decompressWithDict(
                 });
                 return Error.InvalidStream;
             };
-            const dict_match_len = @max(dict_offset, match_len);
+            const dict_match_len = @min(dict_offset, match_len);
             const dict_match = dict[dict_match_start..][0..dict_match_len];
 
             try out.writeAll(dict_match);
@@ -107,7 +137,15 @@ pub fn decompressWithDict(
         };
         const match = dest[match_start..][0..match_len];
 
-        try writeAllOverlapping(&out_stream, match); // TODO
+        if (match_len > offset) {
+            // overlap copy
+            try out.writeAll(match[0..offset]);
+            while (offset < match_len) : (offset += 1) {
+                try out.writeByte(match[offset]);
+            }
+        } else {
+            try out.writeAll(match);
+        }
     }
 }
 
@@ -149,12 +187,3 @@ const Token = packed struct(u8) {
         }
     }
 };
-
-inline fn writeAllOverlapping(stream: *OutStream, bytes: []const u8) Error!void {
-    if (bytes.len == 0) return;
-    if ((stream.buffer.len - stream.pos) < bytes.len) {
-        return Error.NoSpaceLeft;
-    }
-    @memmove(stream.buffer[stream.pos..][0..bytes.len], bytes);
-    stream.pos += bytes.len;
-}
