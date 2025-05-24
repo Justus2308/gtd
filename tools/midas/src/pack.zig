@@ -7,7 +7,7 @@ const LimitedAllocator = @import("LimitedAllocator.zig");
 const assert = std.debug.assert;
 
 pub const Options = struct {
-    is_uncompressed: bool = false,
+    is_uncompressed: bool = false, // TODO
 };
 
 pub const Compressor = struct {
@@ -72,6 +72,13 @@ pub const Compressor = struct {
         len: usize,
 
         pub const List = std.MultiArrayList(Compressable);
+
+        pub fn fromSlice(slice: []const u8) Compressable {
+            return .{
+                .ptr = slice.ptr,
+                .len = slice.len,
+            };
+        }
     };
 
     pub fn train(compressor: *Compressor, samples: Compressable.List.Slice) Compressor.Error!void {

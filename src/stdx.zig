@@ -471,6 +471,24 @@ pub const BufferFallbackAllocator = struct {
     }
 };
 
+pub const FatalReason = enum(u8) {
+    oom = 1,
+    dependency = 2,
+
+    pub fn exitStatus(reason: FatalReason) u8 {
+        return @intFromEnum(reason);
+    }
+
+    comptime {
+        for (std.enums.values(FatalReason)) |reason| assert(reason.exitStatus() != 0);
+    }
+};
+pub fn fatal(reason: FatalReason, comptime fmt: []const u8, args: anytype) noreturn {
+    std.log.scoped(.fatal).err(fmt, args);
+    const status = reason.exitStatus();
+    std.process.exit(status);
+}
+
 pub const MapFileToMemoryError = std.fs.File.GetSeekPosError || posix.MMapError || std.posix.UnexpectedError;
 pub fn mapFileToMemory(file: std.fs.File) MapFileToMemoryError![]align(std.heap.page_size_min) const u8 {
     const size = try file.getEndPos();

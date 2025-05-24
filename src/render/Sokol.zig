@@ -329,7 +329,7 @@ fn log(
     const args = .{ tag_nonnull, filename, line_nr, log_item, message };
     const sokol_log = std.log.scoped(.sokol);
     switch (log_level) {
-        0 => std.debug.panic("(sokol): " ++ format, args),
+        0 => stdx.fatal(.dependency, "(sokol): " ++ format, args),
         1 => sokol_log.err(format, args),
         2 => sokol_log.warn(format, args),
         else => sokol_log.info(format, args),

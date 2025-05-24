@@ -289,51 +289,31 @@ pub const Node = struct {
         pub const Iterator = struct {
             next_node: ?*Node,
             storage: *Node.Storage,
-            vtable: *const VTable,
-
-            pub const VTable = struct {
-                next: *const fn (it: *Node.List.Iterator) ?*Node,
-                prev: *const fn (it: *Node.List.Iterator) ?*Node,
-            };
-            pub const vtables = std.enums.EnumFieldStruct(
-                Node.List.Direction,
-                *const Node.List.Iterator.VTable,
-                null,
-            ){
-                .first_to_last = &.{
-                    .next = &Node.List.Iterator.innerNodeNext,
-                    .prev = &Node.List.Iterator.innerNodePrev,
-                },
-                .last_to_first = &.{
-                    .next = &Node.List.Iterator.innerNodePrev,
-                    .prev = &Node.List.Iterator.innerNodeNext,
-                },
-            };
+            direction: Node.List.Direction,
 
             pub fn next(it: *Node.List.Iterator) ?*Node {
-                return it.vtable.next(it);
+                return switch (it.direction) {
+                    inline else => |d| it.innerNodeIter(d),
+                };
             }
 
             pub fn prev(it: *Node.List.Iterator) ?*Node {
-                return it.vtable.prev(it);
+                return switch (it.direction) {
+                    inline else => |d| it.innerNodeIter(d.flipped()),
+                };
             }
 
             pub fn peek(it: Node.List.Iterator) ?*Node {
                 return it.next_node;
             }
 
-            fn innerNodeNext(it: *Node.List.Iterator) ?*Node {
+            fn innerNodeIter(it: *Node.List.Iterator, comptime direction: Direction) ?*Node {
+                const next_field_name = comptime switch (direction) {
+                    .first_to_last => "next",
+                    .last_to_first => "prev",
+                };
                 if (it.next_node) |node| {
-                    it.next_node = it.storage.getNode(node.next);
-                    return node;
-                } else {
-                    @branchHint(.unlikely);
-                    return null;
-                }
-            }
-            fn innerNodePrev(it: *Node.List.Iterator) ?*Node {
-                if (it.next_node) |node| {
-                    it.next_node = it.storage.getNode(node.prev);
+                    it.next_node = it.storage.getNode(@field(node, next_field_name));
                     return node;
                 } else {
                     @branchHint(.unlikely);
@@ -350,17 +330,13 @@ pub const Node = struct {
             storage: *Node.Storage,
             direction: Node.List.Direction,
         ) Node.List.Iterator {
-            return switch (direction) {
-                .first_to_last => .{
-                    .next_node = storage.getNode(list.first),
-                    .storage = storage,
-                    .vtable = Node.List.Iterator.vtables.first_to_last,
-                },
-                .last_to_first => .{
-                    .next_node = storage.getNode(list.last),
-                    .storage = storage,
-                    .vtable = Node.List.Iterator.vtables.last_to_first,
-                },
+            return .{
+                .next_node = storage.getNode(switch (direction) {
+                    .first_to_last => list.first,
+                    .last_to_first => list.last,
+                }),
+                .storage = storage,
+                .direction = direction,
             };
         }
     };

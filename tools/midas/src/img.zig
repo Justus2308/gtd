@@ -4,33 +4,55 @@ const root = @import("root");
 const assert = std.debug.assert;
 const log = root.log;
 
-pub fn convert(bytes: []const u8, options: void) ![]const u8 {
-    _ = options;
+pub const Error = error{Stbi};
 
+pub const Data = struct {
+    width: u32,
+    height: u32,
+    channels: u32,
+    pixels: []const u8,
+
+    pub fn deinit(data: *Data) void {
+        stbi.stbi_image_free(data.pixels.ptr);
+        data.* = undefined;
+    }
+};
+
+pub fn load(file: std.fs.File) Error!Data {
     var width: c_int = undefined;
     var height: c_int = undefined;
     var channels: c_int = undefined;
-    const pixels: [*]u8 = stbi.stbi_load_from_memory(bytes.ptr, @intCast(bytes.len), &width, &height, &channels, 0) orelse {
-        log.err("stbi: failed to load image: {s}", .{@as(?[*:0]const u8, stbi.stbi_failure_reason()) orelse "reason unknown"});
-        return error.StbImageLoadFailed;
+    const pixels_ptr: [*]u8 = stbi.stbi_load_from_callbacks(
+        stbi_io_callbacks,
+        @constCast(&file),
+        &width,
+        &height,
+        &channels,
+        0,
+    ) orelse {
+        log.err(
+            "stbi: failed to load image: {s}",
+            .{@as(?[*:0]const u8, stbi.stbi_failure_reason()) orelse "reason unknown"},
+        );
+        return Error.Stbi;
     };
-    defer stbi.stbi_image_free(pixels);
-    return error.Todo;
+    return .{
+        .width = @intCast(width),
+        .height = @intCast(height),
+        .channels = @intCast(channels),
+        .pixels = pixels_ptr[0..@intCast(width * height)],
+    };
 }
 
-pub fn freeConverted(bytes: []const u8) void {
-    std.c.free(@ptrCast(@constCast(bytes.ptr)));
-}
-
-pub fn isConvertible(file: std.fs.File) bool {
+pub fn isLoadable(file: std.fs.File) bool {
     var x: c_int = undefined;
     var y: c_int = undefined;
     var comp: c_int = undefined;
-    const ok_int = stbi.stbi_info_from_callbacks(&stbi_io_callbacks, @constCast(&file), &x, &y, &comp);
+    const ok_int = stbi.stbi_info_from_callbacks(stbi_io_callbacks, @constCast(&file), &x, &y, &comp);
     return (ok_int != 0);
 }
 
-const stbi_io_callbacks = stbi.stbi_io_callbacks{
+const stbi_io_callbacks = &stbi.stbi_io_callbacks{
     .read = &stbiReadCb,
     .skip = &stbiSkipCb,
     .eof = &stbiEofCb,
