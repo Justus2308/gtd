@@ -11,7 +11,7 @@ pub const log = std.log.scoped(.midas);
 var global_opts: struct {
     verbose: bool = false,
     dry_run: bool = false,
-    maxrss: ?u64 = null,
+    maxrss: u64 = std.math.maxInt(u64),
 } = .{};
 
 pub inline fn isVerbose() bool {
@@ -22,7 +22,7 @@ pub inline fn isDryRun() bool {
     return global_opts.dry_run;
 }
 
-pub inline fn maxRss() ?u64 {
+pub inline fn maxRss() u64 {
     return global_opts.maxrss;
 }
 

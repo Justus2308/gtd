@@ -45,13 +45,15 @@ pub fn load(file: std.fs.File) Error!Data {
     };
 }
 
-pub fn isLoadable(file: std.fs.File) bool {
+/// Returns decompressed size or `null` if `file` is invalid
+pub fn getLoadSize(file: std.fs.File) ?u64 {
     var ctx = StbiIoCtx.init(file);
     var x: c_int = undefined;
     var y: c_int = undefined;
     var comp: c_int = undefined;
     const ok_int = stbi.stbi_info_from_callbacks(stbi_io_callbacks, &ctx, &x, &y, &comp);
-    return (ok_int != 0);
+    file.seekTo(0) catch return null;
+    return if (ok_int != 0) @intCast(x * y) else null;
 }
 
 const StbiIoCtx = extern struct {
@@ -92,9 +94,10 @@ const stbi_io_callbacks = &stbi.stbi_io_callbacks{
 };
 
 fn stbiReadCb(user: ?*anyopaque, data: ?[*]u8, size: c_int) callconv(.c) c_int {
+    if (size < 0) return 0;
     if (data) |d| {
         const ctx: *StbiIoCtx = @ptrCast(@alignCast(user orelse return 0));
-        const bytes_read = ctx.read(d[0..@intCast(@max(size, 0))]) catch |err| {
+        const bytes_read = ctx.read(d[0..@intCast(size)]) catch |err| {
             root.log.warn("stbi: read callback failed: handle={any}, size={d}, err={s}", .{
                 ctx.handle,
                 size,
@@ -119,6 +122,6 @@ fn stbiSkipCb(user: ?*anyopaque, n: c_int) callconv(.c) void {
 }
 
 fn stbiEofCb(user: ?*anyopaque) callconv(.c) c_int {
-    const ctx: *StbiIoCtx = @ptrCast(@alignCast(user orelse return ~0));
+    const ctx: *StbiIoCtx = @ptrCast(@alignCast(user orelse return ~@as(c_int, 0)));
     return ctx.eof();
 }

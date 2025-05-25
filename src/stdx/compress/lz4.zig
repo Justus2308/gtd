@@ -3,56 +3,67 @@
 // TODO/NOTE: if the target is 32-bit (e.g. wasm32) and the asset pack is >4GiB this
 //            implementation doesn't work anymore and we need a streaming decoder.
 
-const builtin = @import("builtin");
 const std = @import("std");
+const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const log = std.log.scoped(.lz4);
 
-const is_debug = (builtin.mode == .Debug);
+const is_debug = (@import("builtin").mode == .Debug);
 
 pub const Error = InStream.ReadError || InStream.Reader.NoEofError || OutStream.WriteError || error{ Overflow, InvalidStream };
 pub const InStream = std.io.FixedBufferStream([]const u8);
 pub const OutStream = std.io.FixedBufferStream([]u8);
 
+pub const max_dict_size = (@as(usize, 1) << 16);
+
 pub inline fn decompress(noalias dest: []u8, noalias source: []const u8) Error!void {
     return innerDecompress(dest, source, .any, &.{});
 }
 
+/// If `dict.len > max_dict_size` only the last `max_dict_size` bytes of `dict` are used.
 pub inline fn decompressWithDict(
     noalias dest: []u8,
     noalias source: []const u8,
-    noalias dict: Dict,
+    noalias dict: []const u8,
 ) Error!void {
-    return switch (dict) {
-        .any => |any| innerDecompress(dest, source, .any, any),
-        .exact => |exact| innerDecompress(dest, source, .exact, exact),
-    };
+    if (dict.len < max_dict_size) {
+        return innerDecompress(dest, source, .any, dict);
+    } else {
+        const dict_truncated = dict[(dict.len - max_dict_size)..][0..max_dict_size];
+        return innerDecompress(dest, source, .exact, dict_truncated);
+    }
+    unreachable;
 }
 
-pub const Dict = union(Dict.Kind) {
-    any: []const u8,
-    /// 64KiB, makes OOB checks for offset into dict unnecessary
-    exact: *const [@as(usize, 1) << 16]u8,
+pub const DictKind = enum {
+    any,
+    exact,
 
-    pub const Kind = enum {
-        any,
-        exact,
+    pub fn Type(comptime dict_kind: DictKind) type {
+        return switch (dict_kind) {
+            .any => []const u8,
+            .exact => *const [max_dict_size]u8,
+        };
+    }
 
-        pub inline fn getMatchStart(comptime kind: Dict.Kind, dict: @FieldType(Dict, @tagName(kind)), offset: u16) Error!usize {
-            return switch (kind) {
-                .any => std.math.sub(usize, dict.len, offset),
-                .exact => (dict.len - offset),
-            };
-        }
-    };
+    pub inline fn getMatchStart(
+        comptime dict_kind: DictKind,
+        noalias dict: dict_kind.Type(),
+        offset: u16,
+    ) Error!usize {
+        return switch (dict_kind) {
+            .any => std.math.sub(usize, dict.len, offset),
+            .exact => (max_dict_size - offset),
+        };
+    }
 };
 
 fn innerDecompress(
     noalias dest: []u8,
     noalias source: []const u8,
-    comptime dict_kind: Dict.Kind,
-    noalias dict: @FieldType(Dict, @tagName(dict_kind)),
+    comptime dict_kind: DictKind,
+    noalias dict: dict_kind.Type(),
 ) Error!void {
     errdefer if (is_debug) @memset(dest, undefined);
 
@@ -69,7 +80,7 @@ fn innerDecompress(
 
         const literals_len = try token.readTotalLiteralLength(in);
         const literals_start = in_stream.pos;
-        const literals_end = try std.math.add(usize, in_stream.pos, literals_len);
+        const literals_end = try std.math.add(usize, literals_start, literals_len);
         if (literals_end > source.len) {
             @branchHint(.cold);
             log.err("decompress failed: literals would overflow source (literals_len={d}, source_len={d}, stream_pos={d})", .{
@@ -87,16 +98,17 @@ fn innerDecompress(
 
         // match copy operation
 
-        var offset = in.readInt(u16, .little) catch {
+        var offset = in.readInt(u16, .little) catch |err| {
             // Reached end of input
             @branchHint(.cold);
+            assert(err == Error.EndOfStream);
             break;
         };
         var match_len = try token.readTotalMatchLength(in);
 
         if (offset > out_stream.pos) {
             // match starts inside dict
-            const dict_offset = (offset - out_stream.pos);
+            const dict_offset = (offset - @as(u16, @truncate(out_stream.pos)));
             const dict_match_start = dict_kind.getMatchStart(dict, dict_offset) catch {
                 @branchHint(.cold);
                 log.err("decompress failed: match offset would underflow dict (offset={d}, dict_len={d})", .{
@@ -185,5 +197,96 @@ const Token = packed struct(u8) {
             result = try std.math.add(usize, result, additional_byte);
             if (additional_byte != 0xFF) break;
         }
+        assert(result >= initial_value);
+        return result;
     }
 };
+
+// TESTS
+
+const Lz4FrameHeader = extern struct {
+    magic: [4]u8,
+    flg: FLG,
+    bd: BD,
+    hc: u8,
+
+    pub const lz4frame_magic = @as(u32, 0x184D2204);
+    pub const lz4frame_version = @as(u2, 0b01);
+
+    pub const FLG = packed struct(u8) {
+        dict_id: bool,
+        _1: u1 = 0,
+        content_checksum: bool,
+        content_size: bool,
+        block_checksum: bool,
+        block_indep: bool,
+        version: u2,
+    };
+
+    pub const BD = packed struct(u8) {
+        _0: u1 = 0,
+        _1: u1 = 0,
+        _2: u1 = 0,
+        _3: u1 = 0,
+        block_max_size: BlockMaxSize,
+        _7: u1 = 0,
+
+        pub const BlockMaxSize = enum(u3) {
+            @"64KiB" = 4,
+            @"256KiB" = 5,
+            @"1MiB" = 6,
+            @"4MiB" = 7,
+            _,
+
+            pub fn inBytes(block_max_size: BlockMaxSize) usize {
+                return switch (block_max_size) {
+                    .@"64KiB" => (64 << 10),
+                    .@"256KiB" => (256 << 10),
+                    .@"1MiB" => (1 << 10 << 10),
+                    .@"4MiB" => (4 << 10 << 10),
+                };
+            }
+        };
+    };
+
+    pub fn checkMagic(header: Lz4FrameHeader) bool {
+        const magic = std.mem.readInt(u32, &header.magic, .little);
+        return (magic == lz4frame_magic);
+    }
+};
+
+/// compressed inputs have to be generated with:
+///     lz4 -9zf -BI7 --no-frame-crc [input] [output]
+fn testDecompress(comptime compressed_path: []const u8, comptime expected_path: []const u8) !void {
+    const compressed = @embedFile(compressed_path);
+    const expected = @embedFile(expected_path);
+
+    const header: Lz4FrameHeader = @bitCast(compressed[0..@sizeOf(Lz4FrameHeader)].*);
+    comptime {
+        const expected_flg = Lz4FrameHeader.FLG{
+            .dict_id = false,
+            .content_checksum = false,
+            .content_size = false,
+            .block_checksum = false,
+            .block_indep = true,
+            .version = Lz4FrameHeader.lz4frame_version,
+        };
+        assert(header.flg == expected_flg);
+
+        // const expected_bd = Lz4FrameHeader.BD{
+        //     .block_max_size = .@"4MiB",
+        // };
+        // assert(header.bd == expected_bd);
+    }
+    const block_size = std.mem.readInt(u32, compressed[@sizeOf(Lz4FrameHeader)..][0..@sizeOf(u32)], .little);
+    const data = compressed[(@sizeOf(Lz4FrameHeader) + @sizeOf(u32))..][0..block_size];
+
+    var decompressed: [expected.len]u8 = undefined;
+    try decompress(&decompressed, data);
+    try testing.expectEqualSlices(u8, expected, &decompressed);
+}
+
+test "lz4 decomp lorem ipsum" {
+    try testDecompress("lz4/test_1k_comp.lz4", "lz4/test_1k_raw.txt");
+    try testDecompress("lz4/test_10k_comp.lz4", "lz4/test_10k_raw.txt");
+}
