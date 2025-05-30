@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const stdx = @import("stdx");
 const game = @import("game");
 const render = @import("render");
 const sokol = @import("sokol");
@@ -49,6 +50,7 @@ fn makeSokolDesc() Allocator.Error!sokol.app.Desc {
         .logger = .{ .func = &render.Sokol.sokolLog },
         .win32_console_utf8 = true,
         .win32_console_attach = true,
+        .html5_ask_leave_site = true,
         .user_data = state,
     };
 }
@@ -56,6 +58,15 @@ fn makeSokolDesc() Allocator.Error!sokol.app.Desc {
 pub fn init(userdata: ?*anyopaque) callconv(.c) void {
     const state: *game.State = @alignCast(@ptrCast(userdata));
     state.init() catch @panic("OOM");
+
+    const asset_pack = loadAssetPack() catch |err| switch (err) {
+        .FileNotFound => &.{},
+        else => stdx.fatal(
+            .fs,
+            "failed to load asset pack (assets.midaspack): {s}",
+            .{@errorName(err)},
+        ),
+    };
 }
 
 pub fn cleanup(userdata: ?*anyopaque) callconv(.c) void {
@@ -83,4 +94,30 @@ pub fn event(event_: ?*const sokol.app.Event, userdata: ?*anyopaque) callconv(.c
 
     //     .INVALID => event_log.info("encountered invalid event", .{}),
     // }
+}
+
+fn loadAssetPack() (std.fs.File.OpenError || stdx.MapFileToMemoryError)![]const u8 {
+    const asset_pack_path = "assets/assets.midaspack";
+
+    const mapped = mapped: {
+        const file = try std.fs.cwd().openFile(asset_pack_path, .{
+            .mode = .read_only,
+            .lock = .exclusive,
+        });
+        defer file.close();
+
+        // TODO read file header here
+
+        const mapped = try stdx.mapFileToMemory(file);
+        break :mapped mapped;
+    };
+    errdefer stdx.unmapFileFromMemory(mapped);
+
+    // TODO verify file type + correctness, extract registry
+
+    return mapped;
+}
+
+fn unloadAssetPack(memory: []const u8) void {
+    stdx.unmapFileFromMemory(memory);
 }

@@ -21,6 +21,8 @@ const chunk_allocator = @import("stdx/chunk_allocator.zig");
 pub const ChunkAllocator = chunk_allocator.ChunkAllocator;
 pub const ChunkAllocatorConfig = chunk_allocator.Config;
 
+pub const StringPool = @import("stdx/StringPool.zig");
+
 pub const splines = @import("stdx/splines.zig");
 pub const integrate = @import("stdx/integrate.zig");
 pub const concurrent = @import("stdx/concurrent.zig");
@@ -234,13 +236,38 @@ pub fn EnumSubset(comptime E: type, comptime members: []const E) type {
     } });
 }
 
-pub fn Handle(comptime Int: type, comptime invalid_value: Int, comptime UniqueContext: ?type) type {
+fn InvalidValue(comptime Int: type) type {
+    switch (@typeInfo(Int)) {
+        .int => {},
+        else => |info| @compileError("need 'int', got '" ++ @tagName(info) ++ "'"),
+    }
+    return union(enum) {
+        zero,
+        max_int,
+        min_int,
+        custom: Int,
+
+        pub fn resolve(invalid_value: @This()) Int {
+            return switch (invalid_value) {
+                .zero => 0,
+                .max_int => std.math.maxInt(Int),
+                .min_int => std.math.minInt(Int),
+                .custom => |value| value,
+            };
+        }
+    };
+}
+pub fn Handle(
+    comptime Int: type,
+    comptime invalid_value: InvalidValue(Int),
+    comptime UniqueContext: ?type,
+) type {
     switch (@typeInfo(Int)) {
         .int => {},
         else => |info| @compileError("need 'int', got '" ++ @tagName(info) ++ "'"),
     }
     return enum(Int) {
-        invalid = invalid_value,
+        invalid = invalid_value.resolve(),
         _,
 
         const Self = @This();
@@ -268,19 +295,19 @@ pub fn Handle(comptime Int: type, comptime invalid_value: Int, comptime UniqueCo
 
 test "Handle type uniqueness" {
     comptime {
-        const H1 = Handle(u32, 0, void);
-        const H2 = Handle(u32, 0, struct {});
-        const H3 = Handle(u32, 0, struct { a: f32, b: u16 });
+        const H1 = Handle(u32, .zero, void);
+        const H2 = Handle(u32, .zero, struct {});
+        const H3 = Handle(u32, .zero, struct { a: f32, b: u16 });
 
         try testing.expect(H1 != H2);
         try testing.expect(H2 != H3);
         try testing.expect(H3 != H1);
 
-        const H1Dupe = Handle(u32, 0, void);
+        const H1Dupe = Handle(u32, .zero, void);
         try testing.expectEqual(H1, H1Dupe);
 
-        const HGeneric1 = Handle(u32, 0, null);
-        const HGeneric2 = Handle(u32, 0, null);
+        const HGeneric1 = Handle(u32, .zero, null);
+        const HGeneric2 = Handle(u32, .zero, null);
         try testing.expectEqual(HGeneric1, HGeneric2);
     }
 }
@@ -473,7 +500,8 @@ pub const BufferFallbackAllocator = struct {
 
 pub const FatalReason = enum(u8) {
     oom = 1,
-    dependency = 2,
+    fs = 2,
+    dependency = 3,
 
     pub fn exitStatus(reason: FatalReason) u8 {
         return @intFromEnum(reason);
@@ -483,13 +511,21 @@ pub const FatalReason = enum(u8) {
         for (std.enums.values(FatalReason)) |reason| assert(reason.exitStatus() != 0);
     }
 };
-pub fn fatal(reason: FatalReason, comptime fmt: []const u8, args: anytype) noreturn {
-    std.log.scoped(.fatal).err(fmt, args);
+pub fn fatal(
+    comptime reason: FatalReason,
+    comptime fmt: []const u8,
+    args: anytype,
+) noreturn {
+    std.log.scoped(.fatal).err("[" ++ @tagName(reason) ++ "]: " ++ fmt, args);
     const status = reason.exitStatus();
     std.process.exit(status);
 }
 
 pub const MapFileToMemoryError = std.fs.File.GetSeekPosError || posix.MMapError || std.posix.UnexpectedError;
+
+/// Create a read-only memory mapping of `file`. `file` needs to have
+/// been opened with `read` access. This mapping will remain valid until
+/// it is unmapped with `unmapFileFromMemory()`, even if `file` is closed.
 pub fn mapFileToMemory(file: std.fs.File) MapFileToMemoryError![]align(std.heap.page_size_min) const u8 {
     const size = try file.getEndPos();
     if (size == 0) {

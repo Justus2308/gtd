@@ -69,6 +69,7 @@ fn CellType(comptime padding_size: usize) type {
                 return @enumFromInt(@intFromEnum(state) - 1);
             }
 
+            /// Compares raw integer values of `a` and `b`.
             pub inline fn cmp(a: State, b: State) std.math.Order {
                 return std.math.order(@intFromEnum(a), @intFromEnum(b));
             }

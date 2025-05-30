@@ -4,6 +4,7 @@ const img = @import("img.zig");
 const mesh = @import("mesh.zig");
 const pack = @import("pack.zig");
 const Allocator = std.mem.Allocator;
+const LimitedAllocator = @import("LimitedAllocator.zig");
 const assert = std.debug.assert;
 
 pub const log = std.log.scoped(.midas);
@@ -37,6 +38,11 @@ pub fn main() !void {
     };
     defer parsed_args.deinit(gpa);
 
+    const bytes_left = (maxRss() -| parsed_args.approx_bytes_used);
+
+    var limited_allocator = LimitedAllocator.init(gpa, bytes_left);
+    const allocator = limited_allocator.allocator();
+
     const command_opts = parsed_args.command_opts;
     const inputs = parsed_args.inputs;
     const outputs = parsed_args.outputs;
@@ -53,12 +59,13 @@ pub fn main() !void {
         log.info("outputs: {}", .{std.json.fmt(outputs, .{})});
     }
 
-    var comp = try pack.Compressor.init(gpa, .default);
-    defer comp.deinit();
+    var comp = try pack.Compressor.init(allocator);
+    defer comp.deinit(allocator);
 }
 
 const ParsedArgs = struct {
     arena_state: std.heap.ArenaAllocator.State,
+    approx_bytes_used: usize,
     command_opts: Command.Options,
     inputs: []const [:0]const u8,
     outputs: []const [:0]const u8,
@@ -129,6 +136,7 @@ const ParsedArgs = struct {
         verbose,
         @"dry-run",
         maxrss,
+        @"dump-registry",
         uncompressed,
 
         pub const map = std.StaticStringMap(Option).initComptime(kvs: {
@@ -200,6 +208,7 @@ fn parseArgs(allocator: Allocator) !ParsedArgs {
                                 };
                                 global_opts.maxrss = maxrss;
                             },
+                            .@"dump-registry" => @panic("TODO"),
                             .uncompressed => {
                                 if (command_opts) |opts| {
                                     if (opts.activeTag() == .pack) {
@@ -269,6 +278,7 @@ fn parseArgs(allocator: Allocator) !ParsedArgs {
 
     return .{
         .arena_state = arena.state,
+        .approx_bytes_used = arena.queryCapacity(),
         .command_opts = command_opts_resolved,
         .inputs = inputs_resolved,
         .outputs = outputs_resolved,
@@ -419,6 +429,7 @@ const pack_help_string =
     \\
     \\OPTIONS:
     \\    -o <file>           Provide a custom output location
+    \\    --dump-registry     Dump generated asset registry as 'registry.zon'
     \\    --uncompressed      Disable packed data compression
     \\    --help, -h, -H      Show this message
     \\    

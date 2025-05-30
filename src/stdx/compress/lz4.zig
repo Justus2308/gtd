@@ -1,6 +1,6 @@
 //! Naive implementation strictly following https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md
 
-// TODO/NOTE: if the target is 32-bit (e.g. wasm32) and the asset pack is >4GiB this
+// TODO/NOTE: if the target is 32-bit (e.g. wasm32) and any block is >4GiB this
 //            implementation doesn't work anymore and we need a streaming decoder.
 
 const std = @import("std");
@@ -36,7 +36,7 @@ pub inline fn decompressWithDict(
     unreachable;
 }
 
-pub const DictKind = enum {
+const DictKind = enum {
     any,
     exact,
 
@@ -238,12 +238,13 @@ const Lz4FrameHeader = extern struct {
             @"4MiB" = 7,
             _,
 
-            pub fn inBytes(block_max_size: BlockMaxSize) usize {
+            pub fn inBytes(block_max_size: BlockMaxSize) ?usize {
                 return switch (block_max_size) {
                     .@"64KiB" => (64 << 10),
                     .@"256KiB" => (256 << 10),
                     .@"1MiB" => (1 << 10 << 10),
                     .@"4MiB" => (4 << 10 << 10),
+                    _ => null,
                 };
             }
         };
@@ -290,3 +291,6 @@ test "lz4 decomp lorem ipsum" {
     try testDecompress("lz4/test_1k_comp.lz4", "lz4/test_1k_raw.txt");
     try testDecompress("lz4/test_10k_comp.lz4", "lz4/test_10k_raw.txt");
 }
+
+// dictionaries have to be generated with:
+//     zstd --train --maxdict=65536 [input...] [-o output]
