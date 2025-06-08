@@ -7,28 +7,12 @@
     .dependencies = .{
         // Application Dependencies
         .sokol = .{
-            .url = "https://github.com/floooh/sokol-zig/archive/dfbfaf077ced93bb3274a138c8d4a303d635984a.tar.gz",
-            .hash = "sokol-0.1.0-pb1HK_2OLAAjQT7-b5n6DEXpve4Dd_O7IzGVsK_LzDbN",
-        },
-        .zmesh = .{
-            .url = "https://github.com/zig-gamedev/zmesh/archive/f8f528128704ae879a16ddb0a3470c5e0a144a20.tar.gz",
-            .hash = "zmesh-0.11.0-dev-oO3A5gx7CgCBPHsGeuNzwzXAyEvs57u39AD5EUZTScli",
-        },
-        .qoi = .{
-            .url = "https://github.com/ikskuh/zig-qoi/archive/b97be7d14fd7c421fe55f31a37c8d4ba2826ac6c.tar.gz",
-            .hash = "qoi-0.1.0-5Hmo8rpqAAD1pnE4OYX2tdvxLupff9nkjBGxuxVNtky8",
-        },
-        .s2s = .{
-            .url = "https://github.com/ziglibs/s2s/archive/76d7aea86c1d05afaddab9a1081b6dad68088756.tar.gz",
-            .hash = "s2s-0.0.1-qt8ajW97AADgZZjymAzXPnLV3sR2Fo0r4k7WGJkfftJ1",
+            .url = "git+https://github.com/floooh/sokol-zig#a489c96608bba84bc9262eebdeec8261e603027c",
+            .hash = "sokol-0.1.0-pb1HK1lnLQBiH8mYgOj27tfYcAdUg_zs9GNcfei3hjye",
         },
         .zalgebra = .{
             .url = "https://github.com/kooparse/zalgebra/archive/412c3e1cddcf6b8494a6c008dd152c6e0ec5e846.tar.gz",
             .hash = "zalgebra-0.0.0-aaiVSk5nAQA4CIV_flm1iIpWiSrVcxggA9y_aaa-TtdR",
-        },
-        .domath = .{
-            .url = "https://github.com/Justus2308/domath/archive/0530304759a98675b23704be5b9378fbee7a7bfb.tar.gz",
-            .hash = "domath-0.0.0-ncT8Gi0NAQDESqgYh2MQbIjNZQhhzygMDSUuHdzD0t2z",
         },
 
         // Tooling

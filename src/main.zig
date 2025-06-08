@@ -3,6 +3,7 @@ const std = @import("std");
 const stdx = @import("stdx");
 const game = @import("game");
 const render = @import("render");
+const resource = @import("resource");
 const sokol = @import("sokol");
 
 const mem = std.mem;
@@ -17,6 +18,18 @@ const panic = std.debug.panic;
 const window_width = 1280;
 const window_height = 720;
 const window_title = "Goons TD";
+
+var sokol_state: struct {
+    /// sokol_gfx can only be used from the main thread,
+    /// so we need to collect all loads/unloads requested
+    /// by other threads in MPSC queues here.
+    load_queue: stdx.concurrent.MpscQueue = undefined,
+    unload_queue: stdx.concurrent.MpscQueue = undefined,
+} = .{};
+comptime {
+    sokol_state.load_queue.initInstance();
+    sokol_state.unload_queue.initInstance();
+}
 
 pub fn main() !void {
     const desc = makeSokolDesc() catch @panic("OOM");
@@ -56,6 +69,8 @@ fn makeSokolDesc() Allocator.Error!sokol.app.Desc {
 }
 
 pub fn init(userdata: ?*anyopaque) callconv(.c) void {
+    stdx.ScratchAllocator.init(std.heap.c_allocator);
+
     const state: *game.State = @alignCast(@ptrCast(userdata));
     state.init() catch @panic("OOM");
 
@@ -72,12 +87,25 @@ pub fn init(userdata: ?*anyopaque) callconv(.c) void {
 pub fn cleanup(userdata: ?*anyopaque) callconv(.c) void {
     const state: *game.State = @alignCast(@ptrCast(userdata));
     state.deinit();
+
+    stdx.ScratchAllocator.deinit();
 }
 
 pub fn frame(userdata: ?*anyopaque) callconv(.c) void {
     const state: *game.State = @alignCast(@ptrCast(userdata));
+
+    // Process one sokol load/unload node on this thread.
+    // Only one per frame to prevent/reduce stuttering.
+    if (sokol_state.load_queue.pop()) |node| {
+        const queueable: *resource.Loader.Queueable = @fieldParentPtr("node", node);
+    } else if (sokol_state.unload_queue.pop()) |node| {
+        const queueable: *resource.Loader.Queueable = @fieldParentPtr("node", node);
+    }
+
     const dt = sokol.app.frameDuration();
     state.update(dt) catch {};
+
+    stdx.ScratchAllocator.reset();
 }
 
 pub fn event(event_: ?*const sokol.app.Event, userdata: ?*anyopaque) callconv(.c) void {

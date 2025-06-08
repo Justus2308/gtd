@@ -50,20 +50,20 @@ pub fn build(b: *std.Build) void {
     const target_os = target.result.os.tag;
     const target_arch = target.result.cpu.arch;
 
-    if (!switch (host_os) {
+    if (switch (host_os) {
         .linux, .macos => switch (host_arch) {
             .x86_64, .aarch64 => true,
             else => false,
         },
         .windows => (host_arch == .x86_64),
         else => false,
-    }) @panic("unsupported host");
+    } == false) @panic("unsupported host");
 
-    if (!switch (target_arch) {
+    if (switch (target_arch) {
         .wasm32 => (target_os == .emscripten),
         .wasm64 => false,
         else => true,
-    }) @panic("unsupported target: use 'wasm32-emscripten' to target web");
+    } == false) @panic("unsupported target: use 'wasm32-emscripten' to target web");
 
     const target_category: TargetCategory = category: {
         switch (target_os) {
@@ -194,29 +194,11 @@ pub fn build(b: *std.Build) void {
     runtime_options.addOption(bool, "is_use_compute", is_use_compute);
 
     // Configure dependencies
-    const qoi_dep = b.dependency("qoi", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const qoi_mod = qoi_dep.module("qoi");
-
-    const s2s_dep = b.dependency("s2s", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const s2s_mod = s2s_dep.module("s2s");
-
     const zalgebra_dep = b.dependency("zalgebra", .{
         .target = target,
         .optimize = optimize,
     });
     const zalgebra_mod = zalgebra_dep.module("zalgebra");
-
-    const domath_dep = b.dependency("domath", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const domath_mod = domath_dep.module("domath");
 
     const sokol_dep = b.dependency("sokol", .{
         .target = target,
@@ -313,10 +295,7 @@ pub fn build(b: *std.Build) void {
     };
     const external_imports = [_]std.Build.Module.Import{
         .{ .name = "sokol", .module = sokol_mod },
-        .{ .name = "qoi", .module = qoi_mod },
-        .{ .name = "s2s", .module = s2s_mod },
         .{ .name = "zalgebra", .module = zalgebra_mod },
-        .{ .name = "domath", .module = domath_mod },
         .{ .name = "shader", .module = shader_mod },
         .{ .name = "assets", .module = midas_pack_mod },
     };

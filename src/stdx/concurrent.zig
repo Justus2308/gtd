@@ -1,10 +1,6 @@
-const memory_pool = @import("concurrent/memory_pool.zig");
-pub const MemoryPool = memory_pool.MemoryPool;
-pub const MemoryPoolOptions = memory_pool.Options;
-
 pub const ThreadPool = @import("concurrent/ThreadPool.zig");
 
-pub const SegmentedList = @import("concurrent/segmented_list.zig").SegmentedList;
+pub const MpscQueue = @import("concurrent/MpscQueue.zig");
 
 const hash_map = @import("concurrent/hash_map.zig");
 pub const StringHashMapUnmanaged = hash_map.StringHashMapUnmanaged;

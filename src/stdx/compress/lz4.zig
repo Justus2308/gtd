@@ -12,12 +12,12 @@ const log = std.log.scoped(.lz4);
 const is_debug = (@import("builtin").mode == .Debug);
 
 pub const Error = InStream.ReadError || InStream.Reader.NoEofError || OutStream.WriteError || error{ Overflow, InvalidStream };
-pub const InStream = std.io.FixedBufferStream([]const u8);
-pub const OutStream = std.io.FixedBufferStream([]u8);
+const InStream = std.io.FixedBufferStream([]const u8);
+const OutStream = std.io.FixedBufferStream([]u8);
 
 pub const max_dict_size = (@as(usize, 1) << 16);
 
-pub inline fn decompress(noalias dest: []u8, noalias source: []const u8) Error!void {
+pub inline fn decompress(noalias dest: []u8, noalias source: []const u8) Error![]u8 {
     return innerDecompress(dest, source, .any, &.{});
 }
 
@@ -26,7 +26,7 @@ pub inline fn decompressWithDict(
     noalias dest: []u8,
     noalias source: []const u8,
     noalias dict: []const u8,
-) Error!void {
+) Error![]u8 {
     if (dict.len < max_dict_size) {
         return innerDecompress(dest, source, .any, dict);
     } else {
@@ -64,7 +64,7 @@ fn innerDecompress(
     noalias source: []const u8,
     comptime dict_kind: DictKind,
     noalias dict: dict_kind.Type(),
-) Error!void {
+) Error![]u8 {
     errdefer if (is_debug) @memset(dest, undefined);
 
     var in_stream: InStream = std.io.fixedBufferStream(source);
@@ -159,6 +159,8 @@ fn innerDecompress(
             try out.writeAll(match);
         }
     }
+
+    return out_stream.getWritten();
 }
 
 const Token = packed struct(u8) {
@@ -283,8 +285,8 @@ fn testDecompress(comptime compressed_path: []const u8, comptime expected_path: 
     const data = compressed[(@sizeOf(Lz4FrameHeader) + @sizeOf(u32))..][0..block_size];
 
     var decompressed: [expected.len]u8 = undefined;
-    try decompress(&decompressed, data);
-    try testing.expectEqualSlices(u8, expected, &decompressed);
+    const result = try decompress(&decompressed, data);
+    try testing.expectEqualSlices(u8, expected, result);
 }
 
 test "lz4 decomp lorem ipsum" {

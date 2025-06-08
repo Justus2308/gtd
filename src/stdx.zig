@@ -17,6 +17,14 @@ const target_os = builtin.target.os.tag;
 const is_debug = (builtin.mode == .Debug);
 const is_safe_build = (is_debug or builtin.mode == .ReleaseSafe);
 
+pub const ScratchAllocator = @import("stdx/ScratchAllocator.zig");
+/// WARNING: Call `ScratchAllocator.init()` or `ScratchAllocator.initCapacity()`
+/// before using this! Initialization is asserted at runtime.
+pub const scratch_allocator = Allocator{
+    .ptr = undefined,
+    .vtable = &ScratchAllocator.vtable,
+};
+
 const chunk_allocator = @import("stdx/chunk_allocator.zig");
 pub const ChunkAllocator = chunk_allocator.ChunkAllocator;
 pub const ChunkAllocatorConfig = chunk_allocator.Config;
@@ -25,6 +33,7 @@ pub const StringPool = @import("stdx/StringPool.zig");
 
 pub const splines = @import("stdx/splines.zig");
 pub const integrate = @import("stdx/integrate.zig");
+pub const compress = @import("stdx/compress.zig");
 pub const concurrent = @import("stdx/concurrent.zig");
 
 pub fn todo(comptime msg: []const u8) noreturn {
@@ -495,6 +504,41 @@ pub const BufferFallbackAllocator = struct {
             return self.fallback_allocator.rawFree(memory, alignment, ret_addr);
         }
         unreachable;
+    }
+};
+
+pub const ScratchArena = struct {
+    inner: std.heap.ArenaAllocator,
+    mt_safe: std.heap.ThreadSafeAllocator,
+
+    pub fn allocator(self: *ScratchArena) Allocator {
+        return self.mt_safe.allocator();
+    }
+
+    pub fn initInstance(self: *ScratchArena, child_allocator: Allocator) void {
+        self.inner = .init(child_allocator);
+        self.mt_safe = .{ .child_allocator = self.inner.allocator() };
+    }
+
+    pub fn reset(self: *ScratchArena, limit: ?usize) void {
+        self.mt_safe.mutex.lock();
+        defer self.mt_safe.mutex.unlock();
+
+        if (limit) |lim| {
+            _ = self.inner.reset(.{ .retain_with_limit = lim });
+        } else {
+            _ = self.inner.reset(.retain_capacity);
+        }
+    }
+
+    pub fn deinit(self: *ScratchArena) void {
+        {
+            self.mt_safe.mutex.lock();
+            defer self.mt_safe.mutex.unlock();
+
+            self.inner.deinit();
+        }
+        self.* = undefined;
     }
 };
 

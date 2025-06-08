@@ -16,19 +16,31 @@ pub fn deinit(self: *Self, allocator: Allocator) void {
     self.* = undefined;
 }
 
-pub fn create(self: *Self, allocator: Allocator, bytes: []const u8) Allocator.Error!String {
-    const string = String.fromInt(@intCast(self.bytes.items.len));
-    const buffer = try self.bytes.addManyAsSlice(allocator, (bytes.len + 1));
-    @memcpy(buffer[0..bytes.len], bytes);
-    buffer[bytes.len] = 0;
-    self.last_string = string;
-    return string;
+pub fn insert(self: *Self, allocator: Allocator, bytes: []const u8) Allocator.Error!String {
+    const reserved = try self.reserve(allocator, bytes.len);
+    @memcpy(reserved.buffer, bytes);
+    return reserved.string;
 }
 
-pub fn destroy(self: *Self, string: String) void {
+pub fn remove(self: *Self, string: String) void {
     if (string != .invalid and string == self.last_string) {
         self.bytes.items.len = self.last_string.asInt();
     }
+}
+
+pub const Reserved = struct {
+    string: String,
+    buffer: []u8,
+};
+pub fn reserve(self: *Self, allocator: Allocator, len: u32) Allocator.Error!Reserved {
+    const string = String.fromInt(@intCast(self.bytes.items.len));
+    const buffer = try self.bytes.addManyAsSlice(allocator, (len + 1));
+    buffer[len] = 0;
+    self.last_string = string;
+    return .{
+        .string = string,
+        .buffer = buffer[0..len],
+    };
 }
 
 pub fn get(self: Self, string: String) ?[]const u8 {

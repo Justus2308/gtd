@@ -10,14 +10,113 @@ handle_to_cell: stdx.concurrent.AutoHashMapUnmanaged(Loader.Handle, Cell),
 thread_pool: ThreadPool,
 thread_pool_schedule_mutex: std.Thread.Mutex,
 
+/// Collects all sokol tasks that need to be handled on the main thread.
+task_queue: stdx.concurrent.MpscQueue,
+
 load_unload_task_pool: std.heap.MemoryPoolAligned(LoadUnloadTaskCtx, .fromByteUnits(atomic.cache_line)),
 load_unload_task_pool_mutex: std.Thread.Mutex,
 
-default_loader_context: Loader.Context,
+loader_scratch_arenas: ScratchArenas(default_loader_scratch_arena_count),
+
+asset_dir: Dir,
 
 const Manager = @This();
 
 pub const Error = (Loader.Error || Allocator.Error);
+
+pub const default_loader_scratch_arena_count = 8;
+
+fn ScratchArenas(comptime count: usize) type {
+    return struct {
+        _: void align(atomic.cache_line) = {},
+        arenas: [count]std.heap.ArenaAllocator,
+        avail_set: std.StaticBitSet(count),
+        fallback_arena: std.heap.ArenaAllocator,
+        fallback_mt_safe: std.heap.ThreadSafeAllocator,
+        fallback_user_count: atomic.Value(u32),
+        mutex: std.Thread.Mutex,
+
+        const Self = @This();
+
+        pub const default_retain_limit = (10 << 10 << 10); // 10 MiB
+
+        pub fn initInstance(self: *Self, thread_safe_gpa: Allocator) void {
+            self.* = .{
+                .arenas = @splat(.init(thread_safe_gpa)),
+                .avail_set = .initFull(),
+                .fallback_arena = .init(thread_safe_gpa),
+                .fallback_mt_safe = undefined,
+                .fallback_user_count = .init(0),
+                .mutex = .{},
+            };
+            self.fallback_mt_safe = .{ .child_allocator = self.fallback_arena.allocator() };
+        }
+
+        pub fn deinit(self: *Self) void {
+            {
+                self.mutex.lock();
+                defer self.mutex.unlock();
+
+                for (&self.arenas) |*arena| {
+                    arena.deinit();
+                }
+            }
+            {
+                self.fallback_mt_safe.mutex.lock();
+                defer self.fallback_mt_safe.mutex.unlock();
+
+                self.fallback_arena.deinit();
+            }
+            self.* = undefined;
+        }
+
+        pub fn acquire(self: *Self) Allocator {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            if (self.avail_set.toggleFirstSet()) |index| {
+                const arena = &self.arenas[index];
+                _ = arena.reset(.{ .retain_with_limit = Self.default_retain_limit });
+                return arena.allocator();
+            } else {
+                const old_count = self.fallback_user_count.fetchAdd(1, .acq_rel);
+                assert(old_count != std.math.maxInt(u32));
+                return self.fallback_mt_safe.allocator();
+            }
+            unreachable;
+        }
+
+        pub fn release(self: *Self, scratch_arena: Allocator) void {
+            if (scratch_arena.ptr == &self.fallback_mt_safe) {
+                const old_count = self.fallback_user_count.fetchSub(1, .acq_rel);
+                if (old_count == 1) {
+                    self.mutex.lock();
+                    defer self.mutex.unlock();
+
+                    const user_count = self.fallback_user_count.load(.acquire);
+                    if (user_count == 0) {
+                        self.fallback_arena.reset(.{ .retain_with_limit = Self.default_retain_limit });
+                    }
+                }
+                return;
+            }
+
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            assert(stdx.containsPointer(
+                std.heap.ArenaAllocator,
+                self.arenas,
+                @ptrCast(@alignCast(scratch_arena.ptr)),
+            ));
+            const index = @divExact(
+                (@intFromPtr(scratch_arena.ptr) - @intFromPtr(&self.arenas[0])),
+                @sizeOf(std.heap.ArenaAllocator),
+            );
+            self.avail_set.set(index);
+        }
+    };
+}
 
 /// `Cell`s are only destroyed at manager `deinit()`
 /// so references to them remain valid once obtained.
@@ -256,12 +355,12 @@ fn CellType(comptime padding_size: usize) type {
 
 pub fn initInstance(
     m: *Manager,
-    gpa: Allocator,
-    default_loader_context: Loader.Context,
+    thread_safe_gpa: Allocator,
+    asset_dir: Dir,
     max_thread_count: usize,
 ) void {
     m.* = .{
-        .arena = .init(gpa),
+        .arena = .init(thread_safe_gpa),
         .arena_mt = undefined,
         .allocator = undefined,
 
@@ -270,14 +369,20 @@ pub fn initInstance(
         .thread_pool = .init(max_thread_count),
         .thread_pool_schedule_mutex = .{},
 
+        .task_queue = undefined,
+
         .load_unload_task_pool = undefined,
         .load_unload_task_pool_mutex = .{},
 
-        .default_loader_context = default_loader_context,
+        .loader_scratch_arenas = undefined,
+
+        .asset_dir = asset_dir,
     };
     m.arena_mt = .{ .child_allocator = m.arena.allocator() };
     m.allocator = m.arena_mt.allocator();
+    m.task_queue.initInstance();
     m.load_unload_task_pool = .init(m.allocator);
+    m.loader_scratch_arenas.initInstance(thread_safe_gpa);
 }
 
 pub fn deinit(m: *Manager) void {
@@ -292,20 +397,31 @@ pub fn deinit(m: *Manager) void {
     log.debug("asset manager deinitialized", .{});
 }
 
+/// The returned `Handle` can be safely used in render functions
+/// but the resource may take some time to actually load. Until
+/// then it will be silently skipped.
 pub fn load(m: *Manager, gpa: Allocator, loader: Loader) Error!Loader.Handle {
-    return m.loadWithContext(gpa, loader, m.default_loader_context);
-}
+    const context = m.acquireLoaderContext();
+    errdefer m.releaseLoaderContext(context);
 
-pub fn loadWithContext(m: *Manager, gpa: Allocator, loader: Loader, context: Loader.Context) Error!Loader.Handle {
-    const handle = loader.generateHandle();
-    const cell = try m.handle_to_cell.getPtrOrPutAndGetPtr(gpa, handle, .init(loader));
-    try cell.load(gpa, context);
+    const handle = try m.loadWithContext(gpa, loader, context);
     return handle;
 }
 
-pub fn unload(m: *Manager, gpa: Allocator, handle: Loader.Handle) bool {
-    const cell = m.handle_to_cell.getPtr(handle) orelse return false;
-    return cell.unload(gpa);
+pub fn loadWithContext(m: *Manager, gpa: Allocator, loader: Loader, context: Loader.Context) Error!Loader.Handle {
+    const handle = try loader.createHandle();
+    errdefer handle.destroy();
+
+    const cell = try m.handle_to_cell.getPtrOrPutAndGetPtr(gpa, handle, .init(loader));
+    cell.queueLoad(gpa, context);
+
+    return handle;
+}
+
+pub fn unload(m: *Manager, gpa: Allocator, handle: Loader.Handle) void {
+    if (m.handle_to_cell.getPtr(handle)) |cell| {
+        cell.queueUnload(gpa);
+    }
 }
 
 pub fn get(
@@ -314,7 +430,10 @@ pub fn get(
     gpa: Allocator,
     handle: Loader.Handle,
 ) Error!?*const T {
-    return m.getWithContext(T, gpa, handle, m.default_loader_context);
+    const context = m.acquireLoaderContext();
+    defer m.releaseLoaderContext(context);
+    const payload = try m.getWithContext(T, gpa, handle, context);
+    return payload;
 }
 
 pub fn getWithContext(
@@ -367,7 +486,7 @@ pub const LoadUnloadTaskCtx = struct {
 
     pub fn load(task: *ThreadPool.Task) void {
         const ctx: *LoadUnloadTaskCtx = @fieldParentPtr("task", task);
-        _ = ctx.manager.load(ctx.allocator, ctx.data.loader, ctx.manager.default_loader_context) catch {};
+        _ = ctx.manager.load(ctx.allocator, ctx.data.loader) catch {};
         ctx.manager.destroyLoadUnloadTaskCtx(@alignCast(ctx));
     }
 
@@ -433,6 +552,17 @@ fn scheduleLoadUnloadTask(m: *Manager, noalias load_unload_task_ctx: *LoadUnload
     m.thread_pool_schedule_mutex.lock();
     defer m.thread_pool_schedule_mutex.unlock();
     m.thread_pool.schedule(&load_unload_task_ctx.task);
+}
+
+fn acquireLoaderContext(m: *Manager) Loader.Context {
+    return .{
+        .asset_dir = m.asset_dir,
+        .scratch_arena = m.loader_scratch_arenas.acquire(),
+    };
+}
+
+fn releaseLoaderContext(m: *Manager, context: Loader.Context) void {
+    m.loader_scratch_arenas.release(context.scratch_arena);
 }
 
 const builtin = @import("builtin");
